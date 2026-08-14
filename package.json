@@ -1,11 +1,11 @@
 {
-  "name": "nais3",
+  "name": "nais3-eae",
   "version": "1.0.18",
-  "description": "NAIS3 - NovelAI Image Studio 3",
+  "description": "NAIS3 EAE - NovelAI Image Studio 3 (Fork)",
   "main": "./out/main/index.js",
   "author": "sunanakgo",
   "license": "GPL-3.0",
-  "homepage": "https://github.com/sunanakgo/NAIS3",
+  "homepage": "https://github.com/ZelyZely/NAIS3_EAE",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",

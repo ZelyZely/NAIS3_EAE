@@ -1,5 +1,5 @@
-appId: com.sunanakgo.nais3
-productName: NAIS3
+appId: com.zelyzely.nais3eae
+productName: NAIS3 EAE
 directories:
   buildResources: build
 files:
@@ -15,7 +15,7 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: NAIS3
+  executableName: NAIS3 EAE
   # Windows는 둥근 모서리·여백 규칙이 없어 mac용(여백 큼) 대신 여백 최소 버전 사용
   icon: build/icon-win.png
   target:

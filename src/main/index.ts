@@ -27,7 +27,7 @@ import { GenerationQueue } from './queue/generation-queue'
 import { getPresetName, getScene } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
-app.setName('NAIS3')
+app.setName('NAIS3 EAE')
 
 // 중복 실행 방지 (특히 Windows) — 두 번째 실행은 기존 창을 앞으로
 if (!app.requestSingleInstanceLock()) {

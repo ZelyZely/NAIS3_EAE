@@ -8,7 +8,7 @@ const STEALTH_MAGIC = 'stealth_pngcomp'
 const LOCAL_PARAM_KEYS = ['nais3-params', 'nais2-params']
 
 /** PNG tEXt/zTXt/iTXt 청크에서 keyword→text 추출 */
-function parsePngTextChunks(buf: Buffer): Record<string, string> {
+export function parsePngTextChunks(buf: Buffer): Record<string, string> {
   const out: Record<string, string> = {}
   if (buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIG)) return out
   let off = 8
@@ -54,6 +54,54 @@ function parsePngTextChunks(buf: Buffer): Record<string, string> {
     off = dataEnd + 4 // + CRC
   }
   return out
+}
+
+/**
+ * WEBP 손실 압축본용 메타데이터 이전 — PNG tEXt 딕셔너리를 base64 JSON으로 묶어
+ * EXIF IFD0.ImageDescription에 싣는다 (WEBP는 tEXt 청크가 없어 EXIF가 유일한 텍스트 컨테이너).
+ */
+export function encodeTextDictForExif(text: Record<string, string>): string {
+  return Buffer.from(JSON.stringify(text), 'utf8').toString('base64')
+}
+
+function decodeTextDictFromExif(b64: string): Record<string, string> {
+  return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as Record<string, string>
+}
+
+/**
+ * TIFF(EXIF) IFD0에서 ImageDescription(tag 0x010e, ASCII) 값만 읽는 최소 파서.
+ * sharp가 돌려주는 exif 버퍼는 JPEG APP1 관례대로 "Exif\0\0" 6바이트 프리픽스가 붙어 있고,
+ * TIFF 내부 오프셋들은 모두 이 프리픽스 뒤(TIFF 헤더 시작)를 기준으로 한다.
+ */
+function readExifImageDescription(buf: Buffer): string | undefined {
+  const base =
+    buf.length >= 6 && buf.toString('ascii', 0, 4) === 'Exif' && buf[4] === 0 && buf[5] === 0
+      ? 6
+      : 0
+  if (buf.length < base + 8) return undefined
+  const byteOrder = buf.toString('ascii', base, base + 2)
+  const le = byteOrder === 'II'
+  if (!le && byteOrder !== 'MM') return undefined
+  const u16 = (o: number): number => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o))
+  const u32 = (o: number): number => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o))
+  const ifdOffset = base + u32(base + 4)
+  if (ifdOffset + 2 > buf.length) return undefined
+  const count = u16(ifdOffset)
+  for (let i = 0; i < count; i++) {
+    const entryOff = ifdOffset + 2 + i * 12
+    if (entryOff + 12 > buf.length) break
+    const tag = u16(entryOff)
+    const type = u16(entryOff + 2)
+    if (tag === 0x010e && type === 2) {
+      const len = u32(entryOff + 4)
+      const dataOff = len <= 4 ? entryOff + 8 : base + u32(entryOff + 8)
+      if (dataOff + len > buf.length) return undefined
+      const raw = buf.subarray(dataOff, dataOff + len)
+      const nul = raw.indexOf(0)
+      return raw.toString('utf8', 0, nul >= 0 ? nul : raw.length)
+    }
+  }
+  return undefined
 }
 
 /** stealth 메타데이터 (알파 채널 LSB, column-major, magic + gzip JSON) */
@@ -204,9 +252,22 @@ export function metadataFromPayloadJson(json: string): ImageMetadata | null {
   }
 }
 
-/** PNG 버퍼 → 정규화 메타 (tEXt Comment → stealth 폴백). 없으면 null */
-export async function metadataFromPng(buf: Buffer): Promise<ImageMetadata | null> {
-  const text = parsePngTextChunks(buf)
+/** WEBP(EXIF ImageDescription) → PNG tEXt와 동일한 keyword→text 딕셔너리로 복원 */
+async function textDictFromWebp(buf: Buffer): Promise<Record<string, string>> {
+  try {
+    const { exif } = await sharp(buf).metadata()
+    if (!exif) return {}
+    const b64 = readExifImageDescription(exif)
+    return b64 ? decodeTextDictFromExif(b64) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** PNG/WEBP 버퍼 → 정규화 메타 (tEXt/EXIF Comment → stealth 폴백[PNG 한정]). 없으면 null */
+export async function metadataFromImage(buf: Buffer): Promise<ImageMetadata | null> {
+  const isPng = buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIG)
+  const text = isPng ? parsePngTextChunks(buf) : await textDictFromWebp(buf)
   const local = parseLocalParams(text)
   let comment: Params | null = null
   let extra = {
@@ -221,7 +282,8 @@ export async function metadataFromPng(buf: Buffer): Promise<ImageMetadata | null
       comment = null
     }
   }
-  if (!comment) {
+  // stealth(알파 LSB)는 원본 PNG 전용 — 손실 WEBP 재압축본은 항상 EXIF에 명시적으로 싣기 때문에 불필요
+  if (!comment && isPng) {
     const stealth = await extractStealthComment(buf)
     if (stealth) {
       comment = (stealth.Comment as Params) ?? (stealth as Params)

@@ -6,6 +6,7 @@ import sharp from 'sharp'
 import type { DirectorMethod, ImageMetadata } from '../../shared/types'
 import { getDb } from '../db'
 import { getSetting } from '../db/settings'
+import { encodeTextDictForExif, parsePngTextChunks } from './metadata'
 
 /**
  * 생성 이미지 저장 규칙 (P3의 핵심):
@@ -97,6 +98,39 @@ export function thumbnailByPath(filePath: string): Buffer | null {
   return row?.thumbnail ?? null
 }
 
+const WEBP_QUALITY_DEFAULT = 80
+
+function webpLossyEnabled(): boolean {
+  return getSetting('webp_lossy') === '1'
+}
+
+function webpQuality(): number {
+  const n = Number(getSetting('webp_quality'))
+  return Number.isFinite(n) && n >= 1 && n <= 100 ? Math.round(n) : WEBP_QUALITY_DEFAULT
+}
+
+/**
+ * 원본 PNG → 손실 WEBP 재압축.
+ * 원본 tEXt(NAI 생성 파라미터) + NAIS3 로컬 메타데이터(promptParts)는 잃지 않고
+ * EXIF IFD0.ImageDescription(base64 JSON)으로 옮겨 싣는다 — WEBP는 tEXt 청크가 없어서.
+ */
+async function compressToLossyWebp(
+  png: Buffer,
+  localMetadata?: Pick<ImageMetadata, 'promptParts'>
+): Promise<Buffer> {
+  const text = parsePngTextChunks(png)
+  if (localMetadata) {
+    text['nais3-params'] = Buffer.from(
+      JSON.stringify({ version: 1, ...localMetadata }),
+      'utf8'
+    ).toString('base64')
+  }
+  return sharp(png)
+    .webp({ quality: webpQuality() })
+    .withExif({ IFD0: { ImageDescription: encodeTextDictForExif(text) } })
+    .toBuffer()
+}
+
 /** 자동저장 OFF 메인 생성 저장 — 파일 없이 메모리 + 썸네일 행. 최근 N장 초과분은 행·버퍼 정리 */
 export async function saveEphemeralImage(input: {
   png: Buffer
@@ -106,11 +140,13 @@ export async function saveEphemeralImage(input: {
   format?: 'png' | 'webp'
   localMetadata?: Pick<ImageMetadata, 'promptParts'>
 }): Promise<SavedImage> {
-  const ext = input.format ?? 'png'
+  const lossyWebp = webpLossyEnabled()
+  const ext = lossyWebp ? 'webp' : (input.format ?? 'png')
   const filePath = `${MEMORY_PREFIX}${randomUUID()}.${ext}`
   // 메타데이터 주입본을 캐시에 — "다른 이름으로 저장" 구제 시 파일 저장본과 동일해지게
-  const buffer =
-    ext === 'png' && input.localMetadata
+  const buffer = lossyWebp
+    ? await compressToLossyWebp(input.png, input.localMetadata)
+    : ext === 'png' && input.localMetadata
       ? injectNais3Params(input.png, input.localMetadata)
       : input.png
   memoryImages.set(filePath, buffer)
@@ -180,7 +216,8 @@ export async function saveGeneratedImage(input: {
   }
   mkdirSync(monthDir, { recursive: true })
 
-  const ext = input.format ?? 'png'
+  const lossyWebp = webpLossyEnabled()
+  const ext = lossyWebp ? 'webp' : (input.format ?? 'png')
   let filePath: string
   if (input.sceneName) {
     // 씬 이미지는 첫 장은 씬 이름 그대로, 중복부터 씬 이름_2, _3 ...
@@ -203,8 +240,9 @@ export async function saveGeneratedImage(input: {
     const stamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19)
     filePath = join(monthDir, `NAIS3_${stamp}_${input.seed}.${ext}`)
   }
-  const fileBuffer =
-    ext === 'png' && input.localMetadata
+  const fileBuffer = lossyWebp
+    ? await compressToLossyWebp(input.png, input.localMetadata)
+    : ext === 'png' && input.localMetadata
       ? injectNais3Params(input.png, input.localMetadata)
       : input.png
   writeFileSync(filePath, fileBuffer)

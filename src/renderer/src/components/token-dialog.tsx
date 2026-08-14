@@ -309,6 +309,8 @@ function StorageSection(): React.JSX.Element {
   const [format, setFormat] = useState('png')
   const [dateFolders, setDateFolders] = useState(true)
   const [historyDeleteFile, setHistoryDeleteFile] = useState(false)
+  const [webpLossy, setWebpLossy] = useState(false)
+  const [webpQuality, setWebpQuality] = useState(80)
 
   useEffect(() => {
     void window.nais
@@ -323,6 +325,12 @@ function StorageSection(): React.JSX.Element {
     void window.nais
       .invoke('settings:get', { key: 'history_delete_file' })
       .then(({ value }) => setHistoryDeleteFile(value === '1'))
+    void window.nais
+      .invoke('settings:get', { key: 'webp_lossy' })
+      .then(({ value }) => setWebpLossy(value === '1'))
+    void window.nais
+      .invoke('settings:get', { key: 'webp_quality' })
+      .then(({ value }) => setWebpQuality(value ? Number(value) : 80))
   }, [])
 
   return (
@@ -378,6 +386,36 @@ function StorageSection(): React.JSX.Element {
             </SelectContent>
           </Select>
         </Row>
+        <Row
+          label="WEBP 손실 압축"
+          hint="켜면 저장 파일을 손실 WEBP로 재압축 (이미지 포맷 설정과 무관하게 항상 WEBP로 저장) · 프롬프트 등 메타데이터는 유지"
+        >
+          <Switch
+            checked={webpLossy}
+            onCheckedChange={(v) => {
+              setWebpLossy(v)
+              void window.nais.invoke('settings:set', { key: 'webp_lossy', value: v ? '1' : '0' })
+            }}
+          />
+        </Row>
+        {webpLossy && (
+          <Row label={`압축률 ${webpQuality}`} hint="낮을수록 용량이 작아지고 화질이 떨어짐">
+            <Slider
+              className="w-40"
+              min={1}
+              max={100}
+              step={1}
+              value={[webpQuality]}
+              onValueChange={([v]) => setWebpQuality(v)}
+              onValueCommit={([v]) => {
+                void window.nais.invoke('settings:set', {
+                  key: 'webp_quality',
+                  value: String(v)
+                })
+              }}
+            />
+          </Row>
+        )}
       </div>
       <SaveDirRow
         target="main"

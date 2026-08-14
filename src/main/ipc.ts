@@ -26,7 +26,7 @@ import {
 } from './characters/repo'
 import { getDbPath, getDb } from './db'
 import { analyzeArtists } from './images/artists'
-import { metadataFromPng, metadataFromPayloadJson } from './images/metadata'
+import { metadataFromImage, metadataFromPayloadJson } from './images/metadata'
 import {
   createFragment,
   createFragmentFolder,
@@ -554,7 +554,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     try {
       if (base64) {
         const buf = Buffer.from(base64.replace(/^data:[^,]+,/, ''), 'base64')
-        const meta = await metadataFromPng(buf)
+        const meta = await metadataFromImage(buf)
         return meta ? { meta } : { error: '이 이미지에서 NAI 메타데이터를 찾지 못했습니다' }
       }
       if (filePath) {
@@ -572,7 +572,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
           if (fromDb) return { meta: fromDb }
           return { error: '원본이 만료되었습니다 (자동저장 꺼짐 상태로 생성된 이미지)' }
         }
-        const fromPng = await metadataFromPng(buf)
+        const fromPng = await metadataFromImage(buf)
         if (fromPng) {
           return {
             meta:
