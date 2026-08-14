@@ -1,4 +1,4 @@
-import { ArrowLeft, Loader2, Minus, Play, Plus, Star, Trash2 } from 'lucide-react'
+import { ArrowLeft, Loader2, Minus, Play, Plus, RefreshCw, Star, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Scene } from '@shared/types'
 import { imageUrl } from '../lib/constants'
@@ -33,6 +33,7 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
   const favoritesOnly = useScenesStore((s) => s.favoritesOnly)
   const setFavoritesOnly = useScenesStore((s) => s.setFavoritesOnly)
   const deleteNonFavorites = useScenesStore((s) => s.deleteNonFavorites)
+  const syncScene = useScenesStore((s) => s.syncScene)
 
   const source = useGenerationStore((s) => s.source)
   const basePrompt = useGenerationStore((s) => s.request.prompt)
@@ -137,6 +138,15 @@ export function SceneDetail({ scene }: { scene: Scene }): React.JSX.Element {
       <div className="flex items-center gap-2 border-b border-line px-3 py-2">
         <Button size="sm" variant="ghost" className="gap-1" onClick={() => select(null)}>
           <ArrowLeft size={15} /> 씬 목록
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="gap-1"
+          title="폴더에 직접 넣은 이미지 등 반영"
+          onClick={() => void syncScene(scene.id)}
+        >
+          <RefreshCw size={13} /> 동기화
         </Button>
         <input
           className="min-w-0 flex-1 truncate rounded-md bg-transparent px-2 py-1 text-[15px] font-medium outline-none focus:bg-surface-2"

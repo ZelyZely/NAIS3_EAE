@@ -24,7 +24,7 @@ import { logBalance } from './nai/anlas-log'
 import { fetchAnlasBalance, generateImageStream, generateImageZip } from './nai/client'
 import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { GenerationQueue } from './queue/generation-queue'
-import { getPresetName, getScene } from './scenes/repo'
+import { getPresetPath, getScene } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
 app.setName('NAIS3 EAE')
@@ -255,18 +255,28 @@ app.whenReady().then(() => {
           format: imageFormat,
           localMetadata
         })
-      : // 씬 생성은 씬루트/<프리셋>/<씬 이름>/에 모아 저장 (NAIS2와 동일 계층)
-        await saveGeneratedImage({
-          png,
-          sentPayload,
-          seed: request.seed,
-          kind: request.sceneId ? 'scene' : source ? (source.maskBase64 ? 'inpaint' : 'i2i') : 't2i',
-          sceneId: request.sceneId,
-          format: imageFormat,
-          sceneName: scene?.name,
-          scenePresetName: scene ? (getPresetName(scene.presetId) ?? undefined) : undefined,
-          localMetadata
-        })
+      : // 씬 생성은 씬루트/[폴더/]<프리셋>/<씬 이름>/에 모아 저장 (NAIS2와 동일 계층)
+        await (async () => {
+          const presetPath = scene ? getPresetPath(scene.presetId) : null
+          return saveGeneratedImage({
+            png,
+            sentPayload,
+            seed: request.seed,
+            kind: request.sceneId
+              ? 'scene'
+              : source
+                ? source.maskBase64
+                  ? 'inpaint'
+                  : 'i2i'
+                : 't2i',
+            sceneId: request.sceneId,
+            format: imageFormat,
+            sceneName: scene?.name,
+            scenePresetName: presetPath?.name,
+            scenePresetFolderName: presetPath?.folderName,
+            localMetadata
+          })
+        })()
 
     // 씬 생성이면 해당 씬 갱신 알림 (목록 썸네일/개수, 상세 이미지 갱신용)
     if (request.sceneId)

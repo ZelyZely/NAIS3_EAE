@@ -247,7 +247,12 @@ export interface ScenePreset {
   defaultHeight: number | null
   /** 바인드된 캐릭터 카드 id들 — 이 프리셋 생성 시 사이드바 대신 이 캐릭터들로 교체 (null = 바인드 없음) */
   characterIds: number[] | null
+  /** 소속 폴더 (null = 미분류) — 폴더 소속이 바뀌면 저장 폴더도 실제로 이동한다 */
+  folderId: number | null
 }
+
+/** scenePresets:reorder 전송 순서 항목 — CharacterOrderEntry와 같은 모델, 프리셋 전용 */
+export type ScenePresetOrderEntry = { type: 'folder' | 'preset'; id: number }
 
 /** 프리셋에 함께 저장되는 생성 파라미터 (시드·캐릭터는 제외) */
 export type PresetParams = Partial<
@@ -470,11 +475,18 @@ export interface IpcInvokeMap {
     req: { filePath?: string; base64?: string }
     res: { tags: ArtistTag[] } | { error: string }
   }
-  'scenePresets:list': { req: void; res: { items: ScenePreset[] } }
-  'scenePresets:create': { req: { name: string }; res: { id: number } }
+  'scenePresets:list': { req: void; res: { folders: ListFolder[]; items: ScenePreset[] } }
+  'scenePresets:create': { req: { name: string; folderId: number | null }; res: { id: number } }
   'scenePresets:rename': { req: { id: number; name: string }; res: void }
   'scenePresets:delete': { req: { id: number }; res: void }
-  'scenePresets:reorder': { req: { ids: number[] }; res: void }
+  /** 폴더 소속이 바뀐 프리셋은 저장 폴더도 실제로 이동 — 실패 시(경로 충돌 등) 예외로 거부 */
+  'scenePresets:reorder': { req: { order: ScenePresetOrderEntry[] }; res: void }
+  'scenePresets:folderCreate': { req: { name: string }; res: { id: number } }
+  'scenePresets:folderRename': { req: { id: number; name: string }; res: void }
+  'scenePresets:folderCollapse': { req: { id: number; collapsed: boolean }; res: void }
+  'scenePresets:folderColor': { req: { id: number; color: string | null }; res: void }
+  /** 폴더 삭제 — 소속 프리셋은 미분류로 (저장 폴더도 루트로 이동) */
+  'scenePresets:folderDelete': { req: { id: number }; res: void }
   /** 프리셋의 새 씬 기본 해상도 (N3) */
   'scenePresets:setDefaultResolution': {
     req: { id: number; width: number; height: number }
@@ -555,6 +567,15 @@ export interface IpcInvokeMap {
   'images:clearAll': { req: void; res: { count: number } }
   /** 씬 이미지 폴더 열기 (NAIS3_scene/<프리셋>/<씬>) */
   'scenes:openFolder': { req: { sceneId: number }; res: { ok: boolean } }
+  /**
+   * 씬 폴더 실시간 감시 시작/전환 — sceneId=null이면 감시 해제만.
+   * 외부에서 넣은 이미지가 감지되면 'scenes:changed' 이벤트로 알림 (기존 생성 완료 이벤트와 동일 경로).
+   */
+  'scenes:watch': { req: { sceneId: number | null }; res: void }
+  /** 씬 폴더를 1회 스캔해 DB에 없는 파일을 등록 (동기화 버튼 — 대량 이관분 수동 반영용) */
+  'scenes:sync': { req: { sceneId: number }; res: { added: number } }
+  /** 프리셋의 모든 씬을 한 번에 동기화 (씬 목록 상단 동기화 버튼) */
+  'scenes:syncPreset': { req: { presetId: number }; res: { added: number } }
   /** 씬 JSON 내보내기/불러오기 (파일 다이얼로그, 활성 프리셋 기준) */
   'scenes:exportJson': { req: { presetId: number }; res: { saved: boolean } }
   'scenes:importJson': { req: { presetId: number }; res: { count: number } }

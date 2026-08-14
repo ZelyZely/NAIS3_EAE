@@ -64,12 +64,20 @@ import {
   renamePreset,
   deletePreset,
   reorderPresets,
+  createPresetFolder,
+  renamePresetFolder,
+  setPresetFolderCollapsed,
+  setPresetFolderColor,
+  deletePresetFolder,
+  watchScene,
+  syncSceneImages,
+  syncPresetScenes,
   setPresetCharacters,
   setPresetDefaultResolution,
   listScenes,
   createScene,
   getScene,
-  getPresetName,
+  getPresetPath,
   updateScene,
   duplicateScene,
   deleteScene,
@@ -197,16 +205,29 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('images:list', ({ limit, offset }) => listImages(limit, offset))
   handle('images:payload', ({ id }) => ({ payloadJson: getImagePayload(id) }))
 
-  handle('scenePresets:list', () => ({ items: listPresets() }))
-  handle('scenePresets:create', ({ name }) => ({ id: createPreset(name) }))
+  handle('scenePresets:list', () => listPresets())
+  handle('scenePresets:create', ({ name, folderId }) => ({ id: createPreset(name, folderId) }))
   handle('scenePresets:rename', ({ id, name }) => {
     renamePreset(id, name)
   })
   handle('scenePresets:delete', ({ id }) => {
     deletePreset(id)
   })
-  handle('scenePresets:reorder', ({ ids }) => {
-    reorderPresets(ids)
+  handle('scenePresets:reorder', ({ order }) => {
+    reorderPresets(order)
+  })
+  handle('scenePresets:folderCreate', ({ name }) => ({ id: createPresetFolder(name) }))
+  handle('scenePresets:folderRename', ({ id, name }) => {
+    renamePresetFolder(id, name)
+  })
+  handle('scenePresets:folderCollapse', ({ id, collapsed }) => {
+    setPresetFolderCollapsed(id, collapsed)
+  })
+  handle('scenePresets:folderColor', ({ id, color }) => {
+    setPresetFolderColor(id, color)
+  })
+  handle('scenePresets:folderDelete', ({ id }) => {
+    deletePresetFolder(id)
   })
   handle('scenePresets:setCharacters', ({ id, characterIds }) => {
     setPresetCharacters(id, characterIds)
@@ -217,11 +238,20 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('scenes:openFolder', ({ sceneId }) => {
     const scene = getScene(sceneId)
     if (!scene) return { ok: false }
-    const dir = sceneDir(getPresetName(scene.presetId), scene.name, scene.id)
+    const presetPath = getPresetPath(scene.presetId)
+    const dir = sceneDir(presetPath?.folderName ?? null, presetPath?.name ?? null, scene.name, scene.id)
     if (!existsSync(dir)) return { ok: false }
     void shell.openPath(dir)
     return { ok: true }
   })
+  handle('scenes:watch', ({ sceneId }) => {
+    watchScene(sceneId, (sid, filePath) => broadcast('scenes:changed', { sceneId: sid, filePath }))
+  })
+  handle('scenes:sync', async ({ sceneId }) => {
+    const { added } = await syncSceneImages(sceneId, 300)
+    return { added }
+  })
+  handle('scenes:syncPreset', async ({ presetId }) => syncPresetScenes(presetId))
   handle('chars:duplicate', ({ id }) => ({ id: duplicateCharacter(id) }))
   handle('frags:duplicate', ({ id }) => ({ id: duplicateFragment(id) }))
 

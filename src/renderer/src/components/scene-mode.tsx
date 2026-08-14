@@ -7,6 +7,7 @@ import {
   FileUp,
   FolderArchive,
   FolderOpen,
+  FolderPlus,
   ImageOff,
   Loader2,
   Minus,
@@ -15,6 +16,7 @@ import {
   Plus,
   RectangleHorizontal,
   RectangleVertical,
+  RefreshCw,
   SlidersHorizontal,
   Square,
   Trash2,
@@ -35,12 +37,14 @@ import { AnimatePresence, motion } from 'motion/react'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import type { Scene, SceneCast } from '@shared/types'
 import { RESOLUTIONS, imageUrl } from '../lib/constants'
+import { buildDisplayRows } from '../lib/folder-list'
 import { useGenerationStore } from '../stores/generation-store'
 import { loadCasts, useScenesStore } from '../stores/scenes-store'
 import { useResolutionsStore } from '../stores/resolutions-store'
 import { askConfirm, askText } from '../stores/dialog-store'
 import { toast } from '../stores/toast-store'
 import { cn } from '../lib/utils'
+import { FolderListView } from './folder-list-view'
 import { ReserveCount } from './reserve-count'
 import { SceneCastDialog } from './scene-cast-dialog'
 import { SceneDetail } from './scene-detail'
@@ -72,18 +76,29 @@ export function SceneMode(): React.JSX.Element {
   return <SceneGrid />
 }
 
-/** NAIS2식 프리셋 드롭다운 — 현재 프리셋 표시 + 전환/추가/이름변경/삭제 */
+/**
+ * NAIS2식 프리셋 드롭다운 — 현재 프리셋 표시 + 전환/추가/이름변경/삭제.
+ * 캐릭터·조각과 같은 폴더 리스트 모델 — 폴더 소속이 바뀌면 저장 폴더도 실제로 이동한다
+ * (실패 시 store가 되돌리고 토스트로 알림).
+ */
 function PresetDropdown(): React.JSX.Element {
   const presets = useScenesStore((s) => s.presets)
+  const presetFolders = useScenesStore((s) => s.presetFolders)
   const activePresetId = useScenesStore((s) => s.activePresetId)
   const setActivePreset = useScenesStore((s) => s.setActivePreset)
   const createPreset = useScenesStore((s) => s.createPreset)
   const renamePreset = useScenesStore((s) => s.renamePreset)
   const deletePreset = useScenesStore((s) => s.deletePreset)
-  const reorderPresets = useScenesStore((s) => s.reorderPresets)
+  const movePreset = useScenesStore((s) => s.movePreset)
+  const createPresetFolder = useScenesStore((s) => s.createPresetFolder)
+  const renamePresetFolder = useScenesStore((s) => s.renamePresetFolder)
+  const togglePresetFolderCollapse = useScenesStore((s) => s.togglePresetFolderCollapse)
+  const setPresetFolderColor = useScenesStore((s) => s.setPresetFolderColor)
+  const removePresetFolder = useScenesStore((s) => s.removePresetFolder)
   const [open, setOpen] = useState(false)
 
   const active = presets.find((p) => p.id === activePresetId)
+  const rows = buildDisplayRows(presetFolders, presets)
 
   // 프리셋 선택 + 닫기 — 닫기를 먼저 (선택의 store 재렌더가 끼어들기 전에 확정) (B9)
   const choose = (id: number): void => {
@@ -101,28 +116,36 @@ function PresetDropdown(): React.JSX.Element {
           </button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-1">
-          <div className="max-h-64 overflow-y-auto overflow-x-hidden no-scrollbar">
-            {/* 드래그로 순서 변경 */}
-            <SortableList
-              ids={presets.map((p) => p.id)}
-              onReorder={(ids) => void reorderPresets(ids)}
-            >
-              {presets.map((p) => (
-                <SortableRow
-                  key={p.id}
-                  id={p.id}
-                  className="group gap-1"
-                  onTap={() => choose(p.id)}
-                >
-                  <div
-                    onClick={() => choose(p.id)}
+          <div className="max-h-72 overflow-y-auto overflow-x-hidden no-scrollbar">
+            <FolderListView
+              rows={rows}
+              searching={false}
+              expandedId={null}
+              folderActions={{
+                rename: (id, name) => void renamePresetFolder(id, name),
+                toggleCollapse: togglePresetFolderCollapse,
+                setColor: setPresetFolderColor,
+                remove: (id) => void removePresetFolder(id),
+                addItem: (folderId) => {
+                  void (async () => {
+                    const name = await askText('새 프리셋 이름', '새 프리셋')
+                    if (name) void createPreset(name, folderId)
+                  })()
+                }
+              }}
+              onMove={(activeKey, overKey) => void movePreset(activeKey, overKey)}
+              emptyText="프리셋 없음"
+              renderHeader={(p) => (
+                <div className="group flex items-center gap-1 px-1.5 py-1">
+                  <button
                     className={cn(
-                      'flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]',
+                      'flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left text-[13px]',
                       p.id === activePresetId && 'font-semibold text-accent'
                     )}
+                    onClick={() => choose(p.id)}
                   >
                     <span className="truncate">{p.name}</span>
-                  </div>
+                  </button>
                   <button
                     className="shrink-0 rounded p-1 text-faint opacity-0 hover:text-fg group-hover:opacity-100"
                     onClick={async () => {
@@ -151,9 +174,9 @@ function PresetDropdown(): React.JSX.Element {
                       <Trash2 size={12} />
                     </button>
                   )}
-                </SortableRow>
-              ))}
-            </SortableList>
+                </div>
+              )}
+            />
           </div>
           <div className="my-1 h-px bg-line" />
           <button
@@ -164,6 +187,15 @@ function PresetDropdown(): React.JSX.Element {
             }}
           >
             <Plus size={14} /> 새 프리셋
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-muted hover:bg-surface-2"
+            onClick={async () => {
+              const name = await askText('새 폴더 이름', '새 폴더')
+              if (name) void createPresetFolder(name)
+            }}
+          >
+            <FolderPlus size={14} /> 새 폴더
           </button>
         </PopoverContent>
       </Popover>
@@ -337,6 +369,7 @@ function SceneGrid(): React.JSX.Element {
   const adjustReserveAll = useScenesStore((s) => s.adjustReserveAll)
   const clearReserveAll = useScenesStore((s) => s.clearReserveAll)
   const reorder = useScenesStore((s) => s.reorder)
+  const syncActivePreset = useScenesStore((s) => s.syncActivePreset)
 
   // 스크롤 위치 복원 — 마운트 직후 + 씬 목록이 늦게 로드된 경우 한 번 더
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -401,6 +434,11 @@ function SceneGrid(): React.JSX.Element {
           icon={<FolderArchive size={16} />}
           tip="ZIP 내보내기"
           onClick={() => void exportZip()}
+        />
+        <IconBtn
+          icon={<RefreshCw size={16} />}
+          tip="프리셋 전체 씬 동기화 (폴더에 직접 넣은 이미지 등 반영)"
+          onClick={() => void syncActivePreset()}
         />
         <IconBtn
           icon={<Pencil size={16} />}

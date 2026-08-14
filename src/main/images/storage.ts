@@ -45,10 +45,24 @@ export function libraryRoot(): string {
   return join(app.getPath('userData'), 'library')
 }
 
-/** 씬 이미지 폴더 경로 — 씬루트/<프리셋>/<씬 이름>/ (저장·폴더 열기 공용) */
-export function sceneDir(presetName: string | null, sceneName: string, sceneId?: number): string {
+/** 프리셋 저장 폴더 경로 — 씬루트/[<폴더>/]<프리셋> (폴더 미분류면 씬루트 바로 아래) */
+export function presetDir(folderName: string | null, presetName: string | null): string {
   const safe = (s: string): string => s.replace(/[/\\:*?"<>|]/g, '_').trim()
-  return join(scenesRoot(), safe(presetName ?? '') || '기본', safe(sceneName) || `씬-${sceneId}`)
+  const preset = safe(presetName ?? '') || '기본'
+  return folderName
+    ? join(scenesRoot(), safe(folderName) || '폴더', preset)
+    : join(scenesRoot(), preset)
+}
+
+/** 씬 이미지 폴더 경로 — 씬루트/[<폴더>/]<프리셋>/<씬 이름>/ (저장·폴더 열기 공용) */
+export function sceneDir(
+  folderName: string | null,
+  presetName: string | null,
+  sceneName: string,
+  sceneId?: number
+): string {
+  const safe = (s: string): string => s.replace(/[/\\:*?"<>|]/g, '_').trim()
+  return join(presetDir(folderName, presetName), safe(sceneName) || `씬-${sceneId}`)
 }
 
 /**
@@ -196,6 +210,8 @@ export async function saveGeneratedImage(input: {
   sceneName?: string
   /** 씬이 속한 프리셋 이름 (프리셋 간 동명 씬 충돌 방지) */
   scenePresetName?: string
+  /** 프리셋이 속한 폴더 이름 (null/미지정 = 미분류) */
+  scenePresetFolderName?: string | null
   /** 전송 payload에는 없는 NAIS3 전용 왕복 메타데이터 */
   localMetadata?: Pick<ImageMetadata, 'promptParts'>
 }): Promise<SavedImage> {
@@ -206,7 +222,12 @@ export async function saveGeneratedImage(input: {
   //       씬 = 씬루트/<프리셋>/<씬 이름>/
   let monthDir: string
   if (input.sceneName) {
-    monthDir = sceneDir(input.scenePresetName ?? null, input.sceneName, input.sceneId)
+    monthDir = sceneDir(
+      input.scenePresetFolderName ?? null,
+      input.scenePresetName ?? null,
+      input.sceneName,
+      input.sceneId
+    )
   } else {
     const out = imagesRoot()
     monthDir =

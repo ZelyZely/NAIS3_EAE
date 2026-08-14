@@ -320,5 +320,20 @@ export const migrations: ((db: Database.Database) => void)[] = [
       ALTER TABLE gen_scenes ADD COLUMN reserve_json TEXT;
       UPDATE gen_scenes SET reserve_json = json_object('', reserve_count) WHERE reserve_count > 0;
     `)
+  },
+
+  // v17: 씬 프리셋 폴더 — 캐릭터/조각과 동일한 폴더 모델. 폴더 소속/이름 변경 시
+  // 저장 폴더도 실제로 이동한다 (scenes/repo.ts movePresetDirectory) — DB와 디스크 항상 일치.
+  (db) => {
+    db.exec(`
+      CREATE TABLE scene_preset_folders (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        collapsed INTEGER NOT NULL DEFAULT 0,
+        color TEXT
+      );
+      ALTER TABLE scene_presets ADD COLUMN folder_id INTEGER REFERENCES scene_preset_folders(id) ON DELETE SET NULL;
+    `)
   }
 ]
