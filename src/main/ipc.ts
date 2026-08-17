@@ -75,6 +75,7 @@ import {
   setPresetCharacters,
   setPresetDefaultResolution,
   listScenes,
+  sceneSummaries,
   createScene,
   getScene,
   getPresetPath,
@@ -85,6 +86,8 @@ import {
   setReserveAll,
   adjustReserveAll,
   reservedTotal,
+  reservedScenes,
+  clearAllReserves,
   setSceneReserves,
   bulkMove,
   bulkDelete,
@@ -197,6 +200,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('nai:anlasUsage', () => anlasUsage())
 
   handle('queue:enqueue', ({ request, count }) => ({ ids: ctx.queue.enqueue(request, count) }))
+  handle('queue:enqueueMany', ({ entries }) => ({ ids: ctx.queue.enqueueBatch(entries) }))
   handle('queue:cancel', ({ ids }) => {
     ctx.queue.cancel(ids)
   })
@@ -323,6 +327,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     }
   })
   handle('scenes:list', ({ presetId }) => ({ items: listScenes(presetId) }))
+  handle('scenes:summaries', ({ ids }) => ({ items: sceneSummaries(ids) }))
   handle('scenes:create', ({ presetId, name }) => ({ id: createScene(presetId, name) }))
   handle('scenes:get', ({ id }) => ({ scene: getScene(id) }))
   handle('scenes:update', ({ id, patch }) => {
@@ -345,6 +350,10 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     setSceneReserves(id, reserves)
   })
   handle('scenes:reservedTotal', () => ({ total: reservedTotal() }))
+  handle('scenes:reserved', () => ({ items: reservedScenes() }))
+  handle('scenes:clearAllReserves', () => {
+    clearAllReserves()
+  })
   handle('scenes:bulkMove', ({ ids, presetId }) => {
     bulkMove(ids, presetId)
   })

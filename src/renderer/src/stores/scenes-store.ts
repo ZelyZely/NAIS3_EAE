@@ -65,6 +65,8 @@ interface ScenesState {
   removePresetFolder: (id: number) => Promise<void>
 
   load: () => Promise<void>
+  /** 지정한 씬들만 경량 재조회해 목록에 패치 — 즐겨찾기 토글/생성 완료처럼 일부만 바뀌었을 때 전체 reload(썸네일 전부 재조회) 대신 사용 */
+  refreshScenes: (ids: number[]) => Promise<void>
   select: (id: number | null) => void
   setEditMode: (v: boolean) => void
   setColumns: (n: number) => void
@@ -314,6 +316,14 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     if (seq !== loadSeq || get().activePresetId !== presetId) return // 더 최신 로드가 있으면 폐기
     set({ scenes: items })
   },
+  refreshScenes: async (ids) => {
+    const uniq = [...new Set(ids)]
+    if (uniq.length === 0) return
+    const { items } = await window.nais.invoke('scenes:summaries', { ids: uniq })
+    if (items.length === 0) return
+    const byId = new Map(items.map((s) => [s.id, s]))
+    set({ scenes: get().scenes.map((s) => byId.get(s.id) ?? s) })
+  },
   select: (selectedId) => {
     if (selectedId !== get().selectedId) recordNav() // 마우스 뒤로/앞으로용 히스토리
     set({ selectedId, images: [], imagesTotal: 0, favoritesOnly: false })
@@ -482,13 +492,13 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
 
   setSceneThumb: (sceneId, filePath) =>
     set({
-      // thumbnail(base64) 비우고 thumbnailPath로 → 카드가 새 원본을 즉시 표시.
+      // thumbnailPath로 → 카드가 새 원본을 즉시 표시.
       // 즐겨찾기가 있는 씬은 즐겨찾기가 썸네일 고정이라 교체하지 않는다 (개수만 갱신)
       scenes: get().scenes.map((s) =>
         s.id === sceneId
           ? s.hasFavorite
             ? { ...s, imageCount: s.imageCount + 1 }
-            : { ...s, thumbnail: '', thumbnailPath: filePath, imageCount: s.imageCount + 1 }
+            : { ...s, thumbnailPath: filePath, imageCount: s.imageCount + 1 }
           : s
       )
     }),
@@ -517,8 +527,9 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const favorite = !img.favorite
     set({ images: get().images.map((i) => (i.id === imageId ? { ...i, favorite } : i)) })
     await window.nais.invoke('images:setFavorite', { id: imageId, favorite })
-    // 카드 썸네일이 즐겨찾기 우선이라 목록도 갱신
-    await get().load()
+    // 카드 썸네일이 즐겨찾기 우선이라 해당 씬만 경량 갱신 (프리셋 전체 reload는 무거움 — N7)
+    const sceneId = get().selectedId
+    if (sceneId != null) void get().refreshScenes([sceneId])
   },
   deleteImage: async (imageId) => {
     const target = get().images.find((i) => i.id === imageId)
@@ -574,36 +585,39 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const castOrder = ['', ...get().casts.map((c) => c.id)]
     const castById = new Map(get().casts.map((c) => [c.id, c]))
 
-    // 프리셋별 예약 씬 수집 + 소진
-    const reservedScenes: Scene[] = []
-    for (const preset of get().presets) {
-      const { items } = await window.nais.invoke('scenes:list', { presetId: preset.id })
-      const reserved = items.filter((s) => s.reserveCount > 0)
-      if (reserved.length === 0) continue
-      if (preset.id === get().activePresetId) {
-        set({
-          scenes: get().scenes.map((s) =>
-            s.reserveCount > 0 ? { ...s, reserveCount: 0, reserves: {} } : s
-          )
-        })
-      }
-      void window.nais.invoke('scenes:setReserveAll', { presetId: preset.id, count: 0 })
-      reservedScenes.push(...reserved)
-    }
+    // 예약된 씬만 전 프리셋 통틀어 한 번에 조회 — 프리셋마다 무거운 scenes:list(썸네일 포함)를
+    // 순차 호출하던 걸 대체. 예약 스캔에 썸네일은 필요 없다 (N8, 대량 생성 시작 시 렉의 원인)
+    const { items: reservedScenes } = await window.nais.invoke('scenes:reserved', undefined)
+    if (reservedScenes.length === 0) return
 
+    // DB는 preset_id 순으로 오므로, 사용자가 정렬한 프리셋 순서(폴더/드래그 반영)로 재정렬
+    const presetOrder = new Map(get().presets.map((p, i) => [p.id, i]))
+    reservedScenes.sort(
+      (a, b) => (presetOrder.get(a.presetId) ?? 0) - (presetOrder.get(b.presetId) ?? 0)
+    )
+
+    // 현재 열린 프리셋 카드 배지 즉시 소진(낙관적) + DB는 전 프리셋 한 번에 초기화
+    set({
+      scenes: get().scenes.map((s) =>
+        s.reserveCount > 0 ? { ...s, reserveCount: 0, reserves: {} } : s
+      )
+    })
+    void window.nais.invoke('scenes:clearAllReserves', undefined)
+
+    // 등록을 건당 개별 invoke로 하면 큐가 매번 전체 상태를 broadcast해서 대량 예약 시
+    // 등록 단계 자체가 O(n²)로 렉이 생긴다 (N7) — 전부 모아서 한 번에 등록
+    const batch: { request: GenerationRequest; count: number }[] = []
     for (const castId of castOrder) {
       const cast = castId === '' ? null : (castById.get(castId) ?? null)
       if (castId !== '' && !cast) continue // 삭제된 출연의 예약은 건너뜀
       for (const scene of reservedScenes) {
         const count = scene.reserves[castId] ?? 0
         for (let i = 0; i < count; i++) {
-          await window.nais.invoke('queue:enqueue', {
-            request: { ...buildSceneRequest(scene, cast), seed: sceneSeed(i) },
-            count: 1
-          })
+          batch.push({ request: { ...buildSceneRequest(scene, cast), seed: sceneSeed(i) }, count: 1 })
         }
       }
     }
+    if (batch.length > 0) await window.nais.invoke('queue:enqueueMany', { entries: batch })
     set({ reservedTotal: 0 })
   },
 
@@ -722,16 +736,20 @@ export async function loadCasts(): Promise<void> {
 export function bindSceneEvents(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined
   let reloadSelected = false
+  const changedIds = new Set<number>()
   return window.nais.on('scenes:changed', ({ sceneId, filePath }) => {
     const st = useScenesStore.getState()
     // 완료 즉시 카드 낙관적 갱신 — 스트리밍 프레임이 사라진 뒤 옛 썸네일이 튀는 것 방지.
-    // 새 원본을 바로 표시(thumbnail 비워 thumbnailPath로 폴백), load()가 곧 정식 썸네일로 대체.
+    // 새 원본을 thumbnailPath로 바로 표시, refreshScenes가 곧 정식 썸네일(nais-image 프로토콜)로 대체.
     st.setSceneThumb(sceneId, filePath)
+    changedIds.add(sceneId)
     if (st.selectedId === sceneId) reloadSelected = true
     clearTimeout(timer)
     timer = setTimeout(() => {
       const s = useScenesStore.getState()
-      void s.load()
+      // 바뀐 씬만 경량 재조회 — 프리셋 전체 load()는 씬 많을 때 썸네일 전부 재조회라 무거움 (N7)
+      void s.refreshScenes([...changedIds])
+      changedIds.clear()
       if (reloadSelected && s.selectedId != null) void s.loadImages(s.selectedId, true)
       reloadSelected = false
     }, 300)

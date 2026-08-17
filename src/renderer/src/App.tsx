@@ -36,6 +36,10 @@ export default function App(): React.JSX.Element {
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth)
   const [ready, setReady] = useState(false)
   const [resizing, setResizing] = useState(false)
+  // 씬 탭 최초 진입 시에만 마운트, 이후로는 계속 살아있음 (keep-alive — 위 렌더 참고).
+  // 렌더 중 상태 조정 — effect로 하면 마운트 프레임이 한 틱 늦어져 SceneMode가 잠깐 비어 보인다
+  const [sceneMounted, setSceneMounted] = useState(centerMode === 'scene')
+  if (centerMode === 'scene' && !sceneMounted) setSceneMounted(true)
 
   // 사이드바 폭 드래그 조절
   const startResize = (e: React.MouseEvent): void => {
@@ -122,17 +126,20 @@ export default function App(): React.JSX.Element {
               </motion.div>
             )}
           </AnimatePresence>
-          {centerMode === 'scene' ? (
-            <SceneMode />
-          ) : centerMode === 'director' ? (
+          {/* 씬 탭은 언마운트하지 않고 CSS로만 숨김 — 탭 왕복마다 SceneMode가 리마운트되며
+              씬 목록을 매번 재조회하던 렉 방지 (한 번 마운트되면 계속 살아있음, N9) */}
+          <div style={{ display: centerMode === 'scene' ? 'contents' : 'none' }}>
+            {sceneMounted && <SceneMode />}
+          </div>
+          {centerMode === 'director' ? (
             <DirectorMode />
           ) : centerMode === 'library' ? (
             <LibraryMode />
           ) : centerMode === 'websearch' ? (
             <WebSearchMode />
-          ) : (
+          ) : centerMode === 'main' ? (
             <PreviewPane />
-          )}
+          ) : null}
           <AnimatePresence initial={false}>
             {rightOpen && (
               <motion.div

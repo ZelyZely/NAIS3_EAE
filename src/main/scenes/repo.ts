@@ -60,14 +60,7 @@ export function setSceneReserves(id: number, reserves: Record<string, number>): 
     .run(total > 0 ? JSON.stringify(clean) : null, total, id)
 }
 
-function toScene(
-  r: Row & {
-    image_count: number
-    thumb?: Buffer | null
-    thumb_path?: string | null
-    has_favorite?: number
-  }
-): Scene {
+function toScene(r: Row & { image_count: number; has_favorite?: number }): Scene {
   return {
     id: r.id,
     presetId: r.preset_id,
@@ -78,8 +71,9 @@ function toScene(
     height: r.height,
     reserveCount: r.reserve_count,
     reserves: parseReserves(r.reserve_json ?? null),
-    thumbnail: r.thumb ? r.thumb.toString('base64') : '',
-    thumbnailPath: r.thumb_path ?? '',
+    // 원본 폴백 경로 — 서버는 항상 '' (렌더러가 방금 생성 직후에만 낙관적으로 채움).
+    // 평상시 카드 썸네일은 nais-image://local/?scene=<id> 프로토콜 지연 로드로 표시
+    thumbnailPath: '',
     imageCount: r.image_count,
     hasFavorite: r.has_favorite === 1
   }
@@ -292,24 +286,51 @@ export function deletePreset(id: number): void {
 }
 
 // ── 씬 ──────────────────────────────────────────────────
-/** 프리셋별 목록 (썸네일은 씬당 1장만 조인 — 수만 장이어도 가벼움) */
+/**
+ * listScenes/sceneSummaries 공용 SELECT. 썸네일 BLOB은 여기서 읽지 않는다 —
+ * 카드는 nais-image://local/?scene=<id> 프로토콜로 지연 로드(렌더러가 화면에 그릴 때 개별 요청).
+ * 이전엔 씬마다 썸네일 BLOB을 읽어 base64로 만들어 응답에 실었는데, better-sqlite3가 동기라
+ * 프리셋 전체를 한 번에 인코딩하는 동안 메인 프로세스가 통째로 멈췄다 (N9) — COUNT/EXISTS만 남겨 가볍게.
+ */
+const SCENE_SELECT = `SELECT s.id, s.preset_id, s.name, s.prompt, s.negative_prompt, s.width, s.height, s.reserve_count, s.reserve_json,
+              (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
+              EXISTS(SELECT 1 FROM images WHERE scene_id = s.id AND favorite = 1) AS has_favorite
+       FROM gen_scenes s`
+
+type SceneRow = Row & {
+  image_count: number
+  has_favorite: number
+}
+
+/** 씬 카드 썸네일 1장 — nais-image 프로토콜이 요청 시점에 조회 (목록 조회에선 절대 읽지 않음) */
+export function sceneThumbnail(sceneId: number): Buffer | null {
+  const row = getDb()
+    .prepare(
+      'SELECT thumbnail FROM images WHERE scene_id = ? ORDER BY favorite DESC, id DESC LIMIT 1'
+    )
+    .get(sceneId) as { thumbnail: Buffer | null } | undefined
+  return row?.thumbnail ?? null
+}
+
 export function listScenes(presetId: number): Scene[] {
   // 카드 썸네일: 즐겨찾기가 있으면 최상단(최신) 즐겨찾기, 없으면 최신 이미지 (NAIS2 방식)
   const rows = getDb()
-    .prepare(
-      `SELECT s.id, s.preset_id, s.name, s.prompt, s.negative_prompt, s.width, s.height, s.reserve_count, s.reserve_json,
-              (SELECT COUNT(*) FROM images WHERE scene_id = s.id) AS image_count,
-              (SELECT thumbnail FROM images WHERE scene_id = s.id ORDER BY favorite DESC, id DESC LIMIT 1) AS thumb,
-              (SELECT file_path FROM images WHERE scene_id = s.id ORDER BY favorite DESC, id DESC LIMIT 1) AS thumb_path,
-              EXISTS(SELECT 1 FROM images WHERE scene_id = s.id AND favorite = 1) AS has_favorite
-       FROM gen_scenes s WHERE s.preset_id = ? ORDER BY s.sort_order, s.id`
-    )
-    .all(presetId) as (Row & {
-    image_count: number
-    thumb: Buffer | null
-    thumb_path: string | null
-    has_favorite: number
-  })[]
+    .prepare(`${SCENE_SELECT} WHERE s.preset_id = ? ORDER BY s.sort_order, s.id`)
+    .all(presetId) as SceneRow[]
+  return rows.map(toScene)
+}
+
+/**
+ * 지정한 씬들만 경량 재조회 — 즐겨찾기 토글/생성 완료처럼 씬 몇 개만 바뀌었을 때
+ * 프리셋 전체(수백 개 썸네일 BLOB)를 다시 읽지 않기 위함. better-sqlite3는 동기라
+ * listScenes를 프리셋 전체에 매번 돌리면 메인 프로세스가 그만큼 멈춘다.
+ */
+export function sceneSummaries(ids: number[]): Scene[] {
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = getDb()
+    .prepare(`${SCENE_SELECT} WHERE s.id IN (${placeholders})`)
+    .all(...ids) as SceneRow[]
   return rows.map(toScene)
 }
 
@@ -598,6 +619,28 @@ export function reorderScenes(ids: number[]): void {
   const db = getDb()
   const stmt = db.prepare('UPDATE gen_scenes SET sort_order = ? WHERE id = ?')
   db.transaction(() => ids.forEach((id, i) => stmt.run(i, id)))()
+}
+
+/**
+ * 예약된(reserve_count > 0) 씬만 전 프리셋 통틀어 한 번에 조회 — 썸네일 서브쿼리 없이.
+ * generateReserved()가 프리셋마다 무거운 listScenes(썸네일 포함)를 순차 호출하던 것을
+ * 대체 — 예약 스캔에 썸네일은 필요 없다. N번 왕복 → 1번, 비용도 예약된 씬 수에만 비례 (N8)
+ */
+export function reservedScenes(): Scene[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, preset_id, name, prompt, negative_prompt, width, height, reserve_count, reserve_json
+       FROM gen_scenes WHERE reserve_count > 0 ORDER BY preset_id, sort_order, id`
+    )
+    .all() as Row[]
+  return rows.map((r) => toScene({ ...r, image_count: 0 }))
+}
+
+/** 예약된 씬 전체(전 프리셋)를 한 번에 초기화 — 프리셋별 setReserveAll 순차 호출 대체 (N8) */
+export function clearAllReserves(): void {
+  getDb()
+    .prepare('UPDATE gen_scenes SET reserve_count = 0, reserve_json = NULL WHERE reserve_count > 0')
+    .run()
 }
 
 /** 프리셋 내 전체 씬 예약 수를 count로 설정 (전체 취소 0 등) */

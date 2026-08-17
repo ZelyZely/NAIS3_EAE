@@ -36,3 +36,11 @@ export const UC_PRESET_OPTIONS: { value: UcPresetIndex; label: string }[] = [
 export function imageUrl(filePath: string): string {
   return `nais-image://local/?path=${encodeURIComponent(filePath)}`
 }
+
+/**
+ * 씬 카드 썸네일 — 목록 응답에 base64를 싣지 않고 <img>가 그려질 때 개별 요청으로 지연 로드한다
+ * (전체 프리셋을 한 번에 인코딩하며 메인 프로세스가 멈추는 것 방지, N9). 캐시 안 하므로 버전 파라미터 불필요.
+ */
+export function sceneThumbUrl(sceneId: number): string {
+  return `nais-image://local/?scene=${sceneId}`
+}

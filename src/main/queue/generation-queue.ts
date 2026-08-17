@@ -34,13 +34,24 @@ export class GenerationQueue extends EventEmitter {
   }
 
   enqueue(request: GenerationRequest, count: number): string[] {
+    return this.enqueueBatch([{ request, count }])
+  }
+
+  /**
+   * 여러 요청을 한 번에 등록 — 항목마다 enqueue()를 반복 호출하면 매번 emitChanged()가
+   * 큐 전체 상태를 렌더러로 broadcast해서 등록 단계가 O(n²)로 느려진다 (대량 예약 시 렉).
+   * 전부 담은 뒤 emitChanged() 한 번만 호출.
+   */
+  enqueueBatch(entries: { request: GenerationRequest; count: number }[]): string[] {
     const ids: string[] = []
-    for (let i = 0; i < count; i++) {
-      const id = randomUUID()
-      // 배치는 장마다 시드+i — 같은 시드 N장(동일 그림 N장) 방지, 시드 고정 시에도 각 장 재현 가능
-      const req = i === 0 ? request : { ...request, seed: (request.seed + i) % 4294967296 }
-      this.items.set(id, { id, state: 'pending', request: req })
-      ids.push(id)
+    for (const { request, count } of entries) {
+      for (let i = 0; i < count; i++) {
+        const id = randomUUID()
+        // 배치는 장마다 시드+i — 같은 시드 N장(동일 그림 N장) 방지, 시드 고정 시에도 각 장 재현 가능
+        const req = i === 0 ? request : { ...request, seed: (request.seed + i) % 4294967296 }
+        this.items.set(id, { id, state: 'pending', request: req })
+        ids.push(id)
+      }
     }
     this.emitChanged()
     void this.run()

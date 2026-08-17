@@ -312,9 +312,11 @@ export interface Scene {
   reserveCount: number
   /** 출연별 예약 내역 — 키는 출연 id ('' = 사이드바 설정) */
   reserves: Record<string, number>
-  /** 목록 카드용 썸네일 — 즐겨찾기가 있으면 최상단 즐겨찾기, 없으면 최신 이미지 (없으면 '') */
-  thumbnail: string
-  /** 썸네일 원본 파일 경로 (카드에 풀해상도로 선명하게 표시. 없으면 '') */
+  /**
+   * 방금 생성 직후 렌더러가 낙관적으로 채우는 원본 파일 경로(없으면 ''). 평상시 카드
+   * 썸네일은 이 필드가 아니라 `nais-image://local/?scene=<id>` 프로토콜로 지연 로드한다
+   * (목록 조회에서 썸네일 BLOB을 읽지 않기 위함 — N9)
+   */
   thumbnailPath: string
   /** 이 씬으로 생성된 이미지 수 */
   imageCount: number
@@ -372,6 +374,10 @@ export interface IpcInvokeMap {
   'nai:balance': { req: void; res: { anlas: number | null; tier: string | null } }
   'nai:anlasUsage': { req: void; res: { today: number; week: number } }
   'queue:enqueue': { req: { request: GenerationRequest; count: number }; res: { ids: string[] } }
+  'queue:enqueueMany': {
+    req: { entries: { request: GenerationRequest; count: number }[] }
+    res: { ids: string[] }
+  }
   'queue:cancel': { req: { ids: string[] }; res: void }
   'queue:status': { req: void; res: QueueStatus }
   'images:list': {
@@ -524,6 +530,7 @@ export interface IpcInvokeMap {
   }
   /** 특정 프리셋의 씬 목록 */
   'scenes:list': { req: { presetId: number }; res: { items: Scene[] } }
+  'scenes:summaries': { req: { ids: number[] }; res: { items: Scene[] } }
   'scenes:create': { req: { presetId: number; name: string }; res: { id: number } }
   'scenes:get': { req: { id: number }; res: { scene: Scene | null } }
   'scenes:update': {
@@ -546,6 +553,10 @@ export interface IpcInvokeMap {
   'scenes:setReserves': { req: { id: number; reserves: Record<string, number> }; res: void }
   /** 모든 프리셋의 예약 총합 — 좌측 "씬 생성 n장" 표시용 */
   'scenes:reservedTotal': { req: void; res: { total: number } }
+  /** 예약된 씬 전체(전 프리셋)를 썸네일 없이 한 번에 조회 — generateReserved 스캔용 (N8) */
+  'scenes:reserved': { req: void; res: { items: Scene[] } }
+  /** 예약된 씬 전체(전 프리셋)를 한 번에 초기화 — generateReserved 소진용 (N8) */
+  'scenes:clearAllReserves': { req: void; res: void }
   /** 편집 모드 일괄 작업 (선택 씬 대상) */
   'scenes:bulkMove': { req: { ids: number[]; presetId: number }; res: void }
   'scenes:bulkDelete': { req: { ids: number[] }; res: void }

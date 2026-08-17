@@ -24,7 +24,7 @@ import { logBalance } from './nai/anlas-log'
 import { fetchAnlasBalance, generateImageStream, generateImageZip } from './nai/client'
 import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { GenerationQueue } from './queue/generation-queue'
-import { getPresetPath, getScene } from './scenes/repo'
+import { getPresetPath, getScene, sceneThumbnail } from './scenes/repo'
 
 // 앱 이름 (dev 메뉴바·dock에서 'Electron' 대신 표시). 패키징 앱은 productName 사용
 app.setName('NAIS3 EAE')
@@ -105,6 +105,15 @@ app.whenReady().then(() => {
 
   protocol.handle('nais-image', (request) => {
     const url = new URL(request.url)
+    // 씬 카드 썸네일 지연 로드 — 목록 조회는 가볍게, 실제 그려질 때만 DB에서 BLOB 1건 조회 (N9)
+    const sceneId = url.searchParams.get('scene')
+    if (sceneId) {
+      const buf = sceneThumbnail(Number(sceneId))
+      if (!buf) return new Response('gone', { status: 404 })
+      return new Response(new Uint8Array(buf), {
+        headers: { 'content-type': 'image/webp', 'cache-control': 'no-store' }
+      })
+    }
     const filePath = decodeURIComponent(url.searchParams.get('path') ?? '')
     // 자동저장 OFF 임시 이미지 — 메모리 원본, 만료됐으면 DB 썸네일로 폴백
     if (isMemoryPath(filePath)) {

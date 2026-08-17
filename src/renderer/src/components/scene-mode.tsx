@@ -36,7 +36,7 @@ import { arrayMove, rectSortingStrategy, SortableContext, useSortable } from '@d
 import { AnimatePresence, motion } from 'motion/react'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import type { Scene, SceneCast } from '@shared/types'
-import { RESOLUTIONS, imageUrl } from '../lib/constants'
+import { RESOLUTIONS, imageUrl, sceneThumbUrl } from '../lib/constants'
 import { buildDisplayRows } from '../lib/folder-list'
 import { useGenerationStore } from '../stores/generation-store'
 import { loadCasts, useScenesStore } from '../stores/scenes-store'
@@ -568,9 +568,9 @@ function SceneGrid(): React.JSX.Element {
                 className="relative overflow-hidden rounded-lg border border-accent bg-surface-2 shadow-2xl"
                 style={{ aspectRatio: CARD_ASPECT[cardOrientation] }}
               >
-                {dragScene.thumbnail ? (
+                {dragScene.imageCount > 0 ? (
                   <img
-                    src={`data:image/webp;base64,${dragScene.thumbnail}`}
+                    src={sceneThumbUrl(dragScene.id)}
                     className="h-full w-full object-cover"
                     draggable={false}
                     alt=""
@@ -782,14 +782,14 @@ const SceneCard = memo(function SceneCard({
   const ctxCount = scene.reserves[activeCastId] ?? 0
 
   const checked = selection.has(scene.id)
-  // 이미지 우선순위: 생성 중 스트리밍 > 저장 썸네일(가벼움, 드래그 렉 방지) > 원본 > 없음.
+  // 이미지 우선순위: 생성 중 스트리밍 > 방금 생성 직후 원본(낙관적, thumbnailPath) > 저장 썸네일(지연 로드) > 없음.
   // 카드는 작게 표시되므로 640 webp 썸네일이면 충분히 선명하고, 풀해상도 대신 써서 드래그가 부드럽다.
   const src = live
     ? `data:image/png;base64,${live}`
-    : scene.thumbnail
-      ? `data:image/webp;base64,${scene.thumbnail}`
-      : scene.thumbnailPath
-        ? imageUrl(scene.thumbnailPath)
+    : scene.thumbnailPath
+      ? imageUrl(scene.thumbnailPath)
+      : scene.imageCount > 0
+        ? sceneThumbUrl(scene.id)
         : null
 
   // 우클릭 메뉴/3-dot 공용 액션
