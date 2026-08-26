@@ -8,7 +8,7 @@ import {
   Notification,
   shell
 } from 'electron'
-import type { IpcEventMap, IpcInvokeMap } from '../shared/types'
+import type { IpcEventMap, IpcInvokeMap, NaiAccountInfo } from '../shared/types'
 import {
   createCharacter,
   createFolder,
@@ -47,10 +47,16 @@ import {
 import { processWildcards, resetSequentialCounters } from './fragments/processor'
 import { removeComments } from '../shared/nai-presets'
 import {
+  addNaiAccount,
+  deleteNaiAccount,
   deleteNaiToken,
+  getActiveNaiAccount,
+  getNaiAccounts,
+  getNaiAccountToken,
   getNaiToken,
   getNaiTokenInfo,
   getSetting,
+  setActiveNaiAccount,
   setNaiToken,
   setSetting
 } from './db/settings'
@@ -172,6 +178,28 @@ export function broadcast<C extends keyof IpcEventMap>(channel: C, payload: IpcE
   }
 }
 
+async function naiAccountInfos(): Promise<{ accounts: NaiAccountInfo[]; activeId: string | null }> {
+  const accounts = getNaiAccounts()
+  const activeId = getActiveNaiAccount()?.id ?? null
+  const infos = await Promise.all(
+    accounts.map(async (account): Promise<NaiAccountInfo> => {
+      const balance = await fetchAnlasBalance(account.token)
+      return {
+        id: account.id,
+        label: account.label,
+        prefix: account.token.slice(0, 4),
+        suffix: account.token.slice(-4),
+        length: account.token.length,
+        active: account.id === activeId,
+        tier: balance.tier,
+        anlas: balance.anlas,
+        ...(balance.usage ? { usage: balance.usage } : {})
+      }
+    })
+  )
+  return { accounts: infos, activeId }
+}
+
 export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQueue }): void {
   handle('db:status', () => ({ version: ctx.dbVersion, path: getDbPath() }))
   handle('app:version', () => ({ version: app.getVersion() }))
@@ -190,12 +218,47 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('nai:deleteToken', () => {
     deleteNaiToken()
   })
+  handle('nai:listAccounts', () => naiAccountInfos())
+  handle('nai:addAccount', async ({ token, label }) => {
+    const result = await verifyToken(token)
+    if (!result.valid) return result
+    const account = addNaiAccount(token, label)
+    broadcast('nai:accountChanged', {
+      accountId: account.id,
+      reason: 'added',
+      label: account.label
+    })
+    return { ...result, accountId: account.id }
+  })
+  handle('nai:setActiveAccount', async ({ id }) => {
+    const active = setActiveNaiAccount(id)
+    const token = active ? getNaiAccountToken(id) : null
+    if (!token) return { active: false, anlas: null, tier: null }
+    const balance = await fetchAnlasBalance(token)
+    const account = getNaiAccounts().find((item) => item.id === id)
+    broadcast('nai:accountChanged', { accountId: id, reason: 'selected', label: account?.label })
+    if (balance.anlas !== null) {
+      logBalance(balance.anlas)
+      broadcast('anlas:balance', {
+        anlas: balance.anlas,
+        tier: balance.tier,
+        ...(balance.usage ? { usage: balance.usage } : {})
+      })
+    }
+    return { active: true, ...balance }
+  })
+  handle('nai:revealAccountToken', ({ id }) => ({ token: getNaiAccountToken(id) }))
+  handle('nai:deleteAccount', ({ id }) => {
+    const activeId = deleteNaiAccount(id)
+    broadcast('nai:accountChanged', { accountId: activeId, reason: 'deleted' })
+    return { activeId }
+  })
   handle('nai:balance', async () => {
     const token = getNaiToken()
     if (!token) return { anlas: null, tier: null }
-    const { anlas, tier } = await fetchAnlasBalance(token)
+    const { anlas, tier, usage } = await fetchAnlasBalance(token)
     if (anlas !== null) logBalance(anlas)
-    return { anlas, tier }
+    return { anlas, tier, ...(usage ? { usage } : {}) }
   })
   handle('nai:anlasUsage', () => anlasUsage())
 
@@ -668,10 +731,10 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
         seed: 0,
         kind: 'upscale'
       })
-      void fetchAnlasBalance(token).then(({ anlas }) => {
+      void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
         if (anlas !== null) {
           logBalance(anlas)
-          broadcast('anlas:balance', { anlas })
+          broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
         }
       })
       return { filePath: saved.filePath, base64: png.toString('base64') }
@@ -716,10 +779,10 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
         kind: method // 툴별 kind (bg-removal 등) → 히스토리 뱃지 구분
       })
       // 잔액 갱신 (디렉터 툴도 Anlas 소모, Opus는 소형 무료)
-      void fetchAnlasBalance(token).then(({ anlas }) => {
+      void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
         if (anlas !== null) {
           logBalance(anlas)
-          broadcast('anlas:balance', { anlas })
+          broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
         }
       })
       return { filePath: saved.filePath, base64: png.toString('base64') }

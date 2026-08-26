@@ -9,11 +9,13 @@ import {
   saveVibeEncoding,
   vibeRowsByIds
 } from './repo'
+import { getVibeEncoding, putVibeEncoding } from './vibe-encoding-cache'
 
 /** 생성 직전 바이브 준비 — 미인코딩/ie 변경분만 encode-vibe (2 Anlas) 후 캐시.
  *  newlyEncoded: 이번에 새로 인코딩된 바이브 id (카드 표시 갱신 통지용) */
 export async function prepareVibes(
   token: string,
+  model: string,
   ids?: number[]
 ): Promise<{ vibes: VibeOptions[]; newlyEncoded: number[] }> {
   // ids 지정 시 그 바이브들(enabled 무시 — 출연 예약), 미지정 시 enabled 항목
@@ -21,15 +23,15 @@ export async function prepareVibes(
   const vibes: VibeOptions[] = []
   const newlyEncoded: number[] = []
   for (const row of rows) {
-    let encoded = row.encoded
-    if (!encoded || row.encodedIe !== row.infoExtracted) {
+    let encoded = getVibeEncoding(row.encoded, row.encodedIe, model, row.infoExtracted)
+    if (!encoded) {
       const res = await fetch(ENDPOINTS.encodeVibe, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token.trim()}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image: readFileSync(row.filePath).toString('base64'),
           information_extracted: row.infoExtracted,
-          model: 'nai-diffusion-4-5-full'
+          model
         })
       })
       if (!res.ok) {
@@ -37,7 +39,8 @@ export async function prepareVibes(
         throw new Error(`바이브 인코딩 실패 ${res.status}: ${text.slice(0, 200)}`)
       }
       encoded = Buffer.from(await res.arrayBuffer()).toString('base64')
-      saveVibeEncoding(row.id, encoded, row.infoExtracted)
+      const packed = putVibeEncoding(row.encoded, row.encodedIe, model, row.infoExtracted, encoded)
+      saveVibeEncoding(row.id, packed, row.infoExtracted)
       newlyEncoded.push(row.id)
     }
     vibes.push({ strength: row.strength, encodedVibeBase64: encoded })

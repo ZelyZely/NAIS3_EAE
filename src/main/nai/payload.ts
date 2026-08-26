@@ -28,7 +28,15 @@ export {
   mergeUcPreset,
   removeComments
 } from '../../shared/nai-presets'
-import { mergeQualityTags, mergeUcPreset, removeComments } from '../../shared/nai-presets'
+import {
+  mergeQualityTags,
+  mergeUcPreset,
+  mergeUcPresetForModel,
+  QUALITY_PRESET_HINT,
+  UC_PRESET_HINT,
+  removeComments
+} from '../../shared/nai-presets'
+import { isV5Model, modelCapabilities } from '../../shared/nai-models'
 
 /**
  * Variety+(skip_cfg_above_sigma) 값.
@@ -120,14 +128,28 @@ export interface BuildOptions {
   vibes?: VibeOptions[]
   /** 출력 이미지 포맷 (NAI 지원: png/webp). 기본 png */
   imageFormat?: 'png' | 'webp'
+  /** V5 native alpha generation. */
+  transparentBackground?: boolean
 }
 
 export function buildGenerateImagePayload(
   req: GenerationRequest,
   opts: BuildOptions = {}
 ): NaiImagePayload {
-  const prompt = mergeQualityTags(removeComments(req.prompt), req.qualityToggle)
-  const negative = mergeUcPreset(removeComments(req.negativePrompt), req.ucPreset)
+  const v5 = isV5Model(req.model)
+  const capabilities = modelCapabilities(req.model)
+  const transparent = v5 && (opts.transparentBackground ?? req.transparentBackground ?? false)
+  const userPrompt = removeComments(req.prompt)
+  const qualityPrompt = mergeQualityTags(userPrompt, req.qualityToggle)
+  const prompt = transparent
+    ? mergeQualityTags(
+        userPrompt ? `${userPrompt}, transparent background` : 'transparent background',
+        req.qualityToggle
+      )
+    : qualityPrompt
+  const negative = v5
+    ? mergeUcPresetForModel(removeComments(req.negativePrompt), req.ucPreset, req.model, userPrompt)
+    : mergeUcPreset(removeComments(req.negativePrompt), req.ucPreset)
 
   // 캐릭터 프롬프트도 주석(#) 제거 — 기본/네거만 걸러지고 캐릭터 칸은 그대로 전송되던 버그 수정
   const activeChars = req.characterPrompts
@@ -137,6 +159,7 @@ export function buildGenerateImagePayload(
       negativePrompt: removeComments(c.negativePrompt)
     }))
     .filter((c) => c.enabled && c.prompt.trim())
+    .slice(0, capabilities.maxCharacters)
   const center = (c: (typeof activeChars)[number]): { x: number; y: number } =>
     req.useCoords ? (c.center ?? { x: 0.5, y: 0.5 }) : { x: 0.5, y: 0.5 }
 
@@ -145,7 +168,7 @@ export function buildGenerateImagePayload(
     input: prompt,
     model: req.model,
     parameters: {
-      params_version: 3,
+      params_version: v5 ? 4 : 3,
       width: req.width,
       height: req.height,
       scale: req.cfgScale,
@@ -177,6 +200,18 @@ export function buildGenerateImagePayload(
         : {}),
       ucPreset: req.ucPreset,
       qualityToggle: req.qualityToggle,
+      ...(v5
+        ? {
+            tag_hint_qt: req.qualityToggle ? QUALITY_PRESET_HINT.standard : QUALITY_PRESET_HINT.none,
+            tag_hint_uc_preset: UC_PRESET_HINT[req.ucPreset],
+            ...(transparent
+              ? {
+                  straight_alpha: true,
+                  tag_hint_transparent_background: true
+                }
+              : {})
+          }
+        : {}),
       autoSmea: false,
       dynamic_thresholding: false,
       controlnet_strength: 1,
@@ -184,14 +219,18 @@ export function buildGenerateImagePayload(
       // 인페인트는 add_original_image=true: 서버가 마스크 밖을 원본으로 합성
       add_original_image: true,
       cfg_rescale: req.cfgRescale,
-      noise_schedule: req.noiseSchedule,
+      noise_schedule: v5 ? 'karras' : req.noiseSchedule,
       legacy_v3_extend: false,
-      skip_cfg_above_sigma: varietySigma({
-        model: req.model,
-        variety: req.variety,
-        width: req.width,
-        height: req.height
-      }),
+      ...(capabilities.variety
+        ? {
+            skip_cfg_above_sigma: varietySigma({
+              model: req.model,
+              variety: req.variety,
+              width: req.width,
+              height: req.height
+            })
+          }
+        : {}),
       use_coords: req.useCoords,
       normalize_reference_strength_multiple: true,
       // 인페인트는 strength를 여기로 (NAIS2: inpaintImg2ImgStrength = userStrength 0.7)
@@ -223,7 +262,7 @@ export function buildGenerateImagePayload(
         center: center(c),
         enabled: true
       })),
-      ...(opts.characterReferences?.length
+      ...(capabilities.characterReferences && opts.characterReferences?.length
         ? {
             director_reference_descriptions: opts.characterReferences.map((r) => ({
               caption: { base_caption: r.referenceType, char_captions: [] },
@@ -250,7 +289,7 @@ export function buildGenerateImagePayload(
               : {})
           }
         : {}),
-      ...(opts.vibes?.length
+      ...(capabilities.vibes && opts.vibes?.length
         ? {
             reference_strength_multiple: opts.vibes.map((v) => v.strength),
             ...(opts.vibes.some((v) => v.cached)

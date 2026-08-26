@@ -1,5 +1,5 @@
 import JSZip from 'jszip'
-import type { GenerationRequest, SubscriptionInfo } from '../../shared/types'
+import type { GenerationRequest, OpusUsageStatus, SubscriptionInfo } from '../../shared/types'
 import { ENDPOINTS } from './endpoints'
 import { buildGenerateImagePayload, type BuildOptions } from './payload'
 import { readImageStream } from './stream'
@@ -22,6 +22,29 @@ export class NaiHttpError extends Error {
   ) {
     super(message)
     this.name = 'NaiHttpError'
+  }
+}
+
+interface NaiSubscriptionResponse {
+  tier?: number
+  trainingStepsLeft?: { fixedTrainingStepsLeft?: number; purchasedTrainingSteps?: number }
+  usage?: OpusUsageStatus
+}
+
+export function parseSubscriptionResponse(data: NaiSubscriptionResponse): SubscriptionInfo {
+  const tierNames = ['paper', 'tablet', 'scroll', 'opus'] as const
+  const usage = data.usage
+  const validUsage =
+    usage &&
+    Number.isFinite(usage.percent) &&
+    typeof usage.isNegative === 'boolean' &&
+    Number.isFinite(usage.timeUntilNextPercent) &&
+    usage.timeUntilNextPercent >= 0
+  return {
+    tier: tierNames[data.tier ?? 0] ?? 'paper',
+    anlasFixed: data.trainingStepsLeft?.fixedTrainingStepsLeft ?? 0,
+    anlasPurchased: data.trainingStepsLeft?.purchasedTrainingSteps ?? 0,
+    ...(validUsage ? { usage } : {})
   }
 }
 
@@ -51,38 +74,28 @@ export async function verifyToken(
   if (res.status === 401) return { valid: false, error: '유효하지 않은 API 토큰' }
   if (!res.ok) return { valid: false, error: `API 오류: ${res.status}` }
 
-  const data = (await res.json()) as {
-    tier?: number
-    trainingStepsLeft?: { fixedTrainingStepsLeft?: number; purchasedTrainingSteps?: number }
-  }
-  const tierNames = ['paper', 'tablet', 'scroll', 'opus'] as const
+  const data = (await res.json()) as NaiSubscriptionResponse
   return {
     valid: true,
-    subscription: {
-      tier: tierNames[data.tier ?? 0] ?? 'paper',
-      anlasFixed: data.trainingStepsLeft?.fixedTrainingStepsLeft ?? 0,
-      anlasPurchased: data.trainingStepsLeft?.purchasedTrainingSteps ?? 0
-    }
+    subscription: parseSubscriptionResponse(data)
   }
 }
 
 /** 현재 Anlas 잔액(fixed + purchased)과 구독 tier. 실패 시 둘 다 null */
-export async function fetchAnlasBalance(
-  token: string
-): Promise<{ anlas: number | null; tier: string | null }> {
+export async function fetchAnlasBalance(token: string): Promise<{
+  anlas: number | null
+  tier: SubscriptionInfo['tier'] | null
+  usage?: OpusUsageStatus
+}> {
   try {
     const res = await fetch(ENDPOINTS.subscription, { headers: headers(token) })
     if (!res.ok) return { anlas: null, tier: null }
-    const data = (await res.json()) as {
-      tier?: number
-      trainingStepsLeft?: { fixedTrainingStepsLeft?: number; purchasedTrainingSteps?: number }
-    }
-    const tierNames = ['paper', 'tablet', 'scroll', 'opus'] as const
+    const data = (await res.json()) as NaiSubscriptionResponse
+    const parsed = parseSubscriptionResponse(data)
     return {
-      anlas:
-        (data.trainingStepsLeft?.fixedTrainingStepsLeft ?? 0) +
-        (data.trainingStepsLeft?.purchasedTrainingSteps ?? 0),
-      tier: tierNames[data.tier ?? 0] ?? 'paper'
+      anlas: parsed.anlasFixed + parsed.anlasPurchased,
+      tier: parsed.tier,
+      ...(parsed.usage ? { usage: parsed.usage } : {})
     }
   } catch {
     return { anlas: null, tier: null }

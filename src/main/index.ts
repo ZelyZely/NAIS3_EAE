@@ -5,10 +5,11 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import sharp from 'sharp'
 import icon from '../../resources/icon.png?asset'
 import { closeDb, initDb } from './db'
-import { getNaiToken } from './db/settings'
 import { getSetting } from './db/settings'
 import { processWildcards } from './fragments/processor'
 import { removeComments } from '../shared/nai-presets'
+import { inpaintingModelFor, modelCapabilities } from '../shared/nai-models'
+import { snapNaiResolution } from '../shared/nai-resolution'
 import { fragmentSource } from './fragments/repo'
 import {
   getMemoryImage,
@@ -22,6 +23,7 @@ import { broadcast, registerIpcHandlers } from './ipc'
 import { setupUpdater } from './updater'
 import { logBalance } from './nai/anlas-log'
 import { fetchAnlasBalance, generateImageStream, generateImageZip } from './nai/client'
+import { requestUsesV5Usage, resolveNaiAccountForGeneration } from './nai/account-router'
 import { prepareCharRefs, prepareVibes } from './refs/prepare'
 import { GenerationQueue } from './queue/generation-queue'
 import { getPresetPath, getScene, sceneThumbnail } from './scenes/repo'
@@ -118,7 +120,8 @@ app.whenReady().then(() => {
     // 자동저장 OFF 임시 이미지 — 메모리 원본, 만료됐으면 DB 썸네일로 폴백
     if (isMemoryPath(filePath)) {
       const buf = getMemoryImage(filePath)
-      if (buf) return new Response(new Uint8Array(buf), { headers: { 'content-type': 'image/png' } })
+      if (buf)
+        return new Response(new Uint8Array(buf), { headers: { 'content-type': 'image/png' } })
       const thumb = thumbnailByPath(filePath)
       if (thumb)
         return new Response(new Uint8Array(thumb), { headers: { 'content-type': 'image/webp' } })
@@ -142,8 +145,23 @@ app.whenReady().then(() => {
 
   // 생성 파이프라인: 큐 → 조각/와일드카드 치환 → 바이브/캐릭레퍼 준비 → 스트리밍 생성 → 저장
   const queue = new GenerationQueue(async (rawRequest, id, signal) => {
-    const token = getNaiToken()
-    if (!token) throw new Error('NAI 토큰이 설정되지 않았습니다')
+    const selection = await resolveNaiAccountForGeneration(requestUsesV5Usage(rawRequest))
+    if (!selection) throw new Error('NAI 토큰이 설정되지 않았습니다')
+    const token = selection.account.token
+    if (selection.rotated) {
+      broadcast('nai:accountChanged', {
+        accountId: selection.account.id,
+        reason: 'rotation',
+        label: selection.account.label
+      })
+      if (selection.balance?.anlas !== null && selection.balance?.anlas !== undefined) {
+        broadcast('anlas:balance', {
+          anlas: selection.balance.anlas,
+          tier: selection.balance.tier,
+          ...(selection.balance.usage ? { usage: selection.balance.usage } : {})
+        })
+      }
+    }
 
     // 배치 항목마다 여기서 치환 — 매 장 다른 와일드카드 결과가 나온다.
     // 주석 제거가 반드시 먼저 — 주석 줄이 조각을 소모하거나(순차 카운터),
@@ -177,9 +195,14 @@ app.whenReady().then(() => {
 
     // 바이브/캐릭레퍼 준비 — 요청이 id를 지정하면(출연 예약) 그것으로, 아니면 DB enabled 항목
     // (바이브는 필요 시 인코딩 — 2 Anlas, 캐시됨)
-    const { vibes, newlyEncoded } = await prepareVibes(token, request.vibeIds)
+    const capabilities = modelCapabilities(request.model)
+    const { vibes, newlyEncoded } = capabilities.vibes
+      ? await prepareVibes(token, request.model, request.vibeIds)
+      : { vibes: [], newlyEncoded: [] }
     if (newlyEncoded.length) broadcast('vibes:encoded', {}) // 카드 인코딩 표시 갱신
-    const characterReferences = await prepareCharRefs(request.charRefIds)
+    const characterReferences = capabilities.characterReferences
+      ? await prepareCharRefs(request.charRefIds)
+      : []
 
     let source = request.source
     // i2i/인페인트: 소스 해상도를 유효 NAI 해상도(64 배수·픽셀 상한)로 스냅하고 이미지를 맞춰 리사이즈.
@@ -200,7 +223,7 @@ app.whenReady().then(() => {
       : undefined
     if (source?.maskBase64 && !request.model.includes('inpainting')) {
       // TODO(fixture): 인페인트 실캡처로 모델 스위칭 여부 확정 필요 (웹 enum에 -inpainting 존재)
-      request = { ...request, model: `${request.model}-inpainting` }
+      request = { ...request, model: inpaintingModelFor(request.model) }
     }
 
     const imageFormat: 'png' | 'webp' = getSetting('image_format') === 'webp' ? 'webp' : 'png'
@@ -292,10 +315,10 @@ app.whenReady().then(() => {
       broadcast('scenes:changed', { sceneId: request.sceneId, filePath: saved.filePath })
 
     // 생성 후 잔액 갱신 (실사용량 추적의 진실 공급원) — 실패해도 생성 흐름엔 영향 없음
-    void fetchAnlasBalance(token).then(({ anlas }) => {
+    void fetchAnlasBalance(token).then(({ anlas, tier, usage }) => {
       if (anlas !== null) {
         logBalance(anlas)
-        broadcast('anlas:balance', { anlas })
+        broadcast('anlas:balance', { anlas, tier, ...(usage ? { usage } : {}) })
       }
     })
 
@@ -338,20 +361,6 @@ app.on('quit', () => {
  * 원본(소스 이미지) 해상도로 순수 이진화(흰=재생성). 서버가 이 마스크로 깨끗이 합성한다.
  * 클라이언트 합성/erode/blur 불필요 — 오히려 경계 심을 만든다.
  */
-/** 소스 해상도를 유효 NAI 해상도로 스냅 — 64 배수, 픽셀 상한 내에서 비율 최대한 보존 */
-function snapNaiResolution(w: number, h: number): { width: number; height: number } {
-  const MAX_PIXELS = 1216 * 1216 // 안전 상한 — 넘으면 비율 유지 축소
-  let ww = w
-  let hh = h
-  if (ww * hh > MAX_PIXELS) {
-    const s = Math.sqrt(MAX_PIXELS / (ww * hh))
-    ww *= s
-    hh *= s
-  }
-  const snap = (n: number): number => Math.max(64, Math.round(n / 64) * 64)
-  return { width: snap(ww), height: snap(hh) }
-}
-
 async function normalizeInpaintMask(
   maskBase64: string,
   width: number,

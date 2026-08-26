@@ -16,8 +16,13 @@ jobs:
         include:
           - os: windows-latest
             script: build:win
+            arch: x64
           - os: macos-latest
             script: build:mac
+            arch: arm64
+          - os: macos-15-intel
+            script: build:mac
+            arch: x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +30,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # 러너 라벨의 실제 CPU가 바뀌면 잘못된 네이티브 모듈을 만들기 전에 중단.
+      - run: node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('runner arch ' + process.arch + ' != expected ${{ matrix.arch }}')"
       - run: npm ci
       - run: npm run ${{ matrix.script }} -- --publish never
+      # macOS 네이티브 모듈(sharp/better-sqlite3)이 앱 실행 파일과 같은 아키텍처인지 검증.
+      # arm64 runner에서 x64까지 한 번에 만들면 optional dependency가 arm64로 섞이는 사고를 막는다.
+      - if: runner.os == 'macOS'
+        run: node scripts/verify-macos-native-deps.mjs
       # 필요한 산출물만 수집 (latest-mac.yml·zip blockmap 등 잡파일 제외)
       - uses: actions/upload-artifact@v4
         with:
@@ -39,7 +50,7 @@ jobs:
             dist/*-mac.zip
           if-no-files-found: ignore
 
-  # 두 빌드를 모아 초안 릴리즈 하나로 (병렬 publish 시 초안 2개 생기는 레이스 방지)
+  # 세 빌드를 모아 초안 릴리즈 하나로 (병렬 publish 시 초안이 갈리는 레이스 방지)
   release:
     needs: build
     runs-on: ubuntu-latest

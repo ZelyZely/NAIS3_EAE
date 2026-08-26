@@ -1,6 +1,11 @@
 import { Dice5, Lock, LockOpen } from 'lucide-react'
 import type { UcPresetIndex } from '@shared/types'
 import { NOISE_SCHEDULES, SAMPLERS, UC_PRESET_OPTIONS } from '../lib/constants'
+import {
+  generationDefaultsForModel,
+  inpaintingModelFor,
+  modelCapabilities
+} from '@shared/nai-models'
 import { ResolutionPicker } from './resolution-picker'
 import { useGenerationStore } from '../stores/generation-store'
 import { Button } from './ui/button'
@@ -27,15 +32,35 @@ export function ParamsDialog({
   onOpenChange: (open: boolean) => void
 }): React.JSX.Element {
   const request = useGenerationStore((s) => s.request)
+  const source = useGenerationStore((s) => s.source)
   const patch = useGenerationStore((s) => s.patchRequest)
   const seedLocked = useGenerationStore((s) => s.seedLocked)
   const setSeedLocked = useGenerationStore((s) => s.setSeedLocked)
+  const capabilities = modelCapabilities(request.model)
+  const effectiveModel = source?.maskBase64 ? inpaintingModelFor(request.model) : request.model
+  const supportsTransparency = modelCapabilities(effectiveModel).transparency
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[420px] p-5">
         <DialogTitle className="mb-4">생성 파라미터</DialogTitle>
         <div className="grid gap-4">
+          <Row label="모델">
+            <Select
+              value={request.model}
+              onValueChange={(model) => patch({ model, ...generationDefaultsForModel(model) })}
+            >
+              <SelectTrigger className="w-52">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="nai-diffusion-5-curated">V5 Curated</SelectItem>
+                <SelectItem value="nai-diffusion-5-full">V5 Full</SelectItem>
+                <SelectItem value="nai-diffusion-4-5-full">V4.5 Full</SelectItem>
+                <SelectItem value="nai-diffusion-4-5-curated">V4.5 Curated</SelectItem>
+              </SelectContent>
+            </Select>
+          </Row>
           <Row label="해상도">
             <ResolutionPicker
               className="w-52"
@@ -118,20 +143,25 @@ export function ParamsDialog({
             </Select>
           </Row>
 
-          <Row label="노이즈 스케줄">
-            <Select value={request.noiseSchedule} onValueChange={(v) => patch({ noiseSchedule: v })}>
-              <SelectTrigger className="w-52">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {NOISE_SCHEDULES.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>
-                    {s.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Row>
+          {capabilities.noiseScheduleSelection && (
+            <Row label="노이즈 스케줄">
+              <Select
+                value={request.noiseSchedule}
+                onValueChange={(v) => patch({ noiseSchedule: v })}
+              >
+                <SelectTrigger className="w-52">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {NOISE_SCHEDULES.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Row>
+          )}
 
           <Row label="UC 프리셋">
             <Select
@@ -158,9 +188,20 @@ export function ParamsDialog({
             />
           </Row>
 
-          <Row label="Variety+">
-            <Switch checked={request.variety} onCheckedChange={(v) => patch({ variety: v })} />
-          </Row>
+          {capabilities.variety && (
+            <Row label="Variety+">
+              <Switch checked={request.variety} onCheckedChange={(v) => patch({ variety: v })} />
+            </Row>
+          )}
+
+          {supportsTransparency && (
+            <Row label="투명 배경">
+              <Switch
+                checked={request.transparentBackground ?? false}
+                onCheckedChange={(v) => patch({ transparentBackground: v })}
+              />
+            </Row>
+          )}
         </div>
       </DialogContent>
     </Dialog>

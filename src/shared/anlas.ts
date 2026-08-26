@@ -1,4 +1,17 @@
-import type { DirectorMethod } from './types'
+import type { DirectorMethod, OpusUsageStatus } from './types'
+
+export function displayOpusUsagePercent(usage: OpusUsageStatus): number {
+  return usage.isNegative ? 0 : Math.max(0, usage.percent)
+}
+
+export function opusUsagePercentSegments(usage: OpusUsageStatus): number[] {
+  const percent = displayOpusUsagePercent(usage)
+  const fullSegments = Math.floor(percent / 100)
+  const remainder = percent % 100
+
+  if (fullSegments === 0) return [remainder]
+  return [...Array.from({ length: fullSegments }, () => 100), ...(remainder > 0 ? [remainder] : [])]
+}
 
 /**
  * Anlas 비용 추정 — NAI 웹 번들의 실제 비용 함수를 이식 (2026-07-05 _app 번들에서 추출).
@@ -16,6 +29,8 @@ import type { DirectorMethod } from './types'
  */
 
 export interface AnlasEstimateInput {
+  /** Generation model. V5 paid generations cost 1.5× V4.5. */
+  model?: string
   width: number
   height: number
   steps: number
@@ -28,6 +43,10 @@ export interface AnlasEstimateInput {
   batchCount: number
   /** 이번 생성에서 새로 인코딩해야 하는 바이브 수 (캐시된 것 제외) */
   unencodedVibes?: number
+  /** 활성 바이브 수 — V4 이상은 4개 초과분마다 장당 2 Anlas */
+  vibeCount?: number
+  /** V5 Opus rechargeable allowance is empty (`subscription.usage.isNegative`). */
+  opusUsageExhausted?: boolean
 }
 
 export interface AnlasEstimate {
@@ -39,8 +58,38 @@ export interface AnlasEstimate {
   charRef: number
   /** 바이브 인코딩 비용 (1회성, 캐시되면 이후 0) */
   vibeEncoding: number
+  /** V4 이상에서 바이브 4개 초과분의 장당 추가 비용 */
+  vibeGeneration: number
   total: number
   free: boolean
+  /** V5 generation consumes the rechargeable allowance instead of Anlas. */
+  usesOpusUsage: boolean
+}
+
+/** 생성 요청과 비용 배지가 동일한 source strength 기본값을 쓰게 한다. */
+export function effectiveGenerationStrength(
+  hasSource: boolean,
+  hasMask: boolean,
+  configured?: number
+): number {
+  return hasSource ? (configured ?? (hasMask ? 1 : 0.7)) : 1
+}
+
+export function formatAnlasEstimate(estimate: AnlasEstimate, batchCount = 1): string {
+  if (estimate.usesOpusUsage) {
+    return batchCount > 1
+      ? 'Opus V5 충전 게이지에서 차감 — 중간에 고갈되면 후속 이미지는 Anlas 사용'
+      : 'Opus V5 충전 게이지에서 차감'
+  }
+  if (estimate.free) return '무료 생성 (Opus · 1024² 이하 · 28스텝 이하)'
+
+  const parts = [
+    estimate.generation > 0 ? `생성 ${estimate.generation}` : '',
+    estimate.charRef > 0 ? `레퍼런스 ${estimate.charRef}` : '',
+    estimate.vibeEncoding > 0 ? `바이브 인코딩 ${estimate.vibeEncoding}` : '',
+    estimate.vibeGeneration > 0 ? `다중 바이브 ${estimate.vibeGeneration}` : ''
+  ].filter(Boolean)
+  return `예상 ${estimate.total} Anlas${parts.length ? ` (${parts.join(', ')})` : ''}`
 }
 
 const VIBE_ENCODE_COST = 2
@@ -91,7 +140,10 @@ export function directorAugmentCost(
   return method === 'bg-removal' ? estimate.perImage * 3 + 5 : estimate.generation
 }
 
-function normalizeDirectorDimensions(width: number, height: number): { width: number; height: number } {
+function normalizeDirectorDimensions(
+  width: number,
+  height: number
+): { width: number; height: number } {
   if (width <= 0 || height <= 0) return { width: 0, height: 0 }
 
   let w = width
@@ -116,16 +168,36 @@ export function estimateAnlas(input: AnlasEstimateInput): AnlasEstimate {
   const px = Math.max(input.width * input.height, 65536)
   const strength = input.strength ?? 1
 
-  const base = Math.ceil(2.951823174884865e-6 * px + 5.753298233447344e-7 * px * input.steps)
+  let base = Math.ceil(2.951823174884865e-6 * px + 5.753298233447344e-7 * px * input.steps)
+  const isV5 = input.model?.startsWith('nai-diffusion-5-') ?? false
+  if (isV5) base *= 1.5
   const perImage = Math.max(Math.ceil(base * strength), 2)
 
   // 캐릭레퍼는 무료 조건을 깨지 않는다 (실측) — 대신 아래에서 별도 사용료 부과
-  const freeEligible = px <= 1048576 && input.steps <= 28 && input.isOpus
+  const freeEligible =
+    px <= 1048576 &&
+    input.steps <= 28 &&
+    input.isOpus &&
+    (!isV5 || input.opusUsageExhausted === false)
 
   const generation = freeEligible ? 0 : perImage * input.batchCount
   const charRef = (input.charRefCount ?? 0) * CHARREF_COST * input.batchCount
   const vibeEncoding = (input.unencodedVibes ?? 0) * VIBE_ENCODE_COST
-  const total = generation + charRef + vibeEncoding
+  const supportsMultivibeSurcharge =
+    input.model?.startsWith('nai-diffusion-4-') || input.model?.startsWith('nai-diffusion-5-')
+  const vibeGeneration = supportsMultivibeSurcharge
+    ? Math.max((input.vibeCount ?? 0) - 4, 0) * 2 * input.batchCount
+    : 0
+  const total = generation + charRef + vibeEncoding + vibeGeneration
 
-  return { perImage, generation, charRef, vibeEncoding, total, free: total === 0 }
+  return {
+    perImage,
+    generation,
+    charRef,
+    vibeEncoding,
+    vibeGeneration,
+    total,
+    free: total === 0,
+    usesOpusUsage: isV5 && freeEligible
+  }
 }

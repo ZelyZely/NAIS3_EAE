@@ -1,10 +1,12 @@
-import { Coins, Download, Loader2, Minus, PanelLeft, PanelRight, Settings, Square, X } from 'lucide-react'
+import { BatteryCharging, Coins, Download, Loader2, Minus, PanelLeft, PanelRight, Settings, Square, X } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useGenerationStore } from '../stores/generation-store'
 import { useLayoutStore } from '../stores/layout-store'
 import { useUpdateStore } from '../stores/update-store'
 import { useVibesStore, useCharRefsStore } from '../stores/refs-store'
-import { estimateAnlas } from '@shared/anlas'
+import { displayOpusUsagePercent, effectiveGenerationStrength, estimateAnlas } from '@shared/anlas'
+import { inpaintingModelFor, modelCapabilities } from '@shared/nai-models'
+import { snapNaiResolution } from '@shared/nai-resolution'
 import { PageNav } from './page-nav'
 import { ThemeToggle } from './theme-toggle'
 
@@ -73,6 +75,27 @@ function AnlasChips({ balance, cost }: { balance: number | null; cost: number })
   )
 }
 
+function OpusUsageChip(): React.JSX.Element | null {
+  const usage = useGenerationStore((s) => s.opusUsage)
+  const model = useGenerationStore((s) => s.request.model)
+  if (!usage || !model.startsWith('nai-diffusion-5-')) return null
+  const percent = displayOpusUsagePercent(usage)
+  const hours = Math.max(0, usage.timeUntilNextPercent / 3600)
+  return (
+    <span
+      className="no-drag flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-0.5 font-mono text-[11.5px] text-muted"
+      title={
+        usage.isNegative
+          ? 'V5 충전 게이지 소진 — 충전될 때까지 Anlas 사용'
+          : `V5 Opus 충전 게이지 · 다음 1%까지 약 ${hours.toFixed(1)}시간`
+      }
+    >
+      <BatteryCharging size={12} className={usage.isNegative ? 'text-danger' : 'text-accent'} />
+      {percent}%
+    </span>
+  )
+}
+
 function BarButton({
   className,
   active,
@@ -97,24 +120,39 @@ export function Titlebar(): React.JSX.Element {
   const toggleRight = useLayoutStore((s) => s.toggleRight)
   const setSettingsOpen = useLayoutStore((s) => s.setSettingsOpen)
   const anlasBalance = useGenerationStore((s) => s.anlasBalance)
+  const opusUsage = useGenerationStore((s) => s.opusUsage)
 
   // 이번 생성에 소모될 Anlas 추정 (고해상도·캐릭터 레퍼런스·미인코딩 바이브 등)
   const request = useGenerationStore((s) => s.request)
+  const source = useGenerationStore((s) => s.source)
   const batchCount = useGenerationStore((s) => s.batchCount)
   const tier = useGenerationStore((s) => s.subscriptionTier)
   const enabledCrefs = useCharRefsStore((s) => s.items.filter((c) => c.enabled).length)
   const unencodedVibes = useVibesStore(
-    (s) => s.items.filter((v) => v.enabled && !v.encodedReady).length
+    (s) => s.items.filter((v) => v.enabled && !v.encodedModels?.includes(request.model)).length
   )
+  const enabledVibes = useVibesStore((s) => s.items.filter((v) => v.enabled).length)
+  const capabilities = modelCapabilities(request.model)
+  const estimateModel = source?.maskBase64 ? inpaintingModelFor(request.model) : request.model
+  const estimateSize = source
+    ? snapNaiResolution(source.width, source.height)
+    : { width: request.width, height: request.height }
   const anlasCost = estimateAnlas({
-    width: request.width,
-    height: request.height,
+    model: estimateModel,
+    width: estimateSize.width,
+    height: estimateSize.height,
     steps: request.steps,
-    strength: request.source ? (request.i2iStrength ?? 0.7) : 1,
-    charRefCount: enabledCrefs,
+    strength: effectiveGenerationStrength(
+      Boolean(source),
+      Boolean(source?.maskBase64),
+      request.i2iStrength
+    ),
+    charRefCount: capabilities.characterReferences ? enabledCrefs : 0,
     isOpus: tier === 'opus',
+    opusUsageExhausted: opusUsage?.isNegative,
     batchCount,
-    unencodedVibes
+    vibeCount: capabilities.vibes ? enabledVibes : 0,
+    unencodedVibes: capabilities.vibes ? unencodedVibes : 0
   }).total
 
   return (
@@ -139,12 +177,14 @@ export function Titlebar(): React.JSX.Element {
           <div className="no-drag mx-0.5">
             <ThemeToggle />
           </div>
+          <OpusUsageChip />
           <AnlasChips balance={anlasBalance} cost={anlasCost} />
         </>
       )}
 
       <div className="flex-1" />
 
+      {isMac && <OpusUsageChip />}
       {isMac && <AnlasChips balance={anlasBalance} cost={anlasCost} />}
 
       <BarButton onClick={toggleRight} active={rightOpen} title="히스토리 패널 접기/펴기">

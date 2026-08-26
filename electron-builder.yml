@@ -37,15 +37,9 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
   target:
-    - target: dmg
-      arch:
-        - arm64
-        - x64
+    - dmg
     # zip: 커스텀 mac 자동 업데이트용 (앱이 zip을 받아 .app 교체 — Tauri 방식, Apple 서명 불필요)
-    - target: zip
-      arch:
-        - arm64
-        - x64
+    - zip
 dmg:
   artifactName: ${name}-${version}-${arch}.${ext}
   writeUpdateInfo: false # dmg는 수동 설치용 — 업데이트 정보 미생성

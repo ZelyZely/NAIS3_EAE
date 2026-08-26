@@ -13,7 +13,14 @@ import {
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { estimateAnlas } from '@shared/anlas'
+import { effectiveGenerationStrength, estimateAnlas, formatAnlasEstimate } from '@shared/anlas'
+import { snapNaiResolution } from '@shared/nai-resolution'
+import {
+  inpaintingModelFor,
+  isV5Model,
+  modelCapabilities,
+  promptTokenLimit
+} from '@shared/nai-models'
 import { useCharactersStore } from '../stores/characters-store'
 import { useFragmentsStore } from '../stores/fragments-store'
 import { useGenerationStore } from '../stores/generation-store'
@@ -29,8 +36,6 @@ import { RefOverlay } from './ref-overlay'
 import { SOURCE_BANNER_HEIGHT, SourceBanner } from './source-banner'
 import { Button } from './ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
-
-const TOKEN_LIMIT = 512
 
 export function PromptPanel(): React.JSX.Element {
   const request = useGenerationStore((s) => s.request)
@@ -50,10 +55,20 @@ export function PromptPanel(): React.JSX.Element {
   const vibeOverlayOpen = useVibesStore((s) => s.overlayOpen)
   const setVibeOverlayOpen = useVibesStore((s) => s.setOverlayOpen)
   const enabledVibes = useVibesStore((s) => s.items.filter((v) => v.enabled).length)
+  const unencodedVibes = useVibesStore(
+    (s) => s.items.filter((v) => v.enabled && !v.encodedModels?.includes(request.model)).length
+  )
   const crefOverlayOpen = useCharRefsStore((s) => s.overlayOpen)
   const setCrefOpen = useCharRefsStore((s) => s.setOverlayOpen)
   const enabledCrefs = useCharRefsStore((s) => s.items.filter((c) => c.enabled).length)
   const source = useGenerationStore((s) => s.source)
+  const opusUsage = useGenerationStore((s) => s.opusUsage)
+  const capabilities = modelCapabilities(request.model)
+  const tokenLimit = promptTokenLimit(request.model)
+  const estimateModel = source?.maskBase64 ? inpaintingModelFor(request.model) : request.model
+  const estimateSize = source
+    ? snapNaiResolution(source.width, source.height)
+    : { width: request.width, height: request.height }
   const [paramsOpen, setParamsOpen] = useState(false)
 
   useEffect(() => {
@@ -117,6 +132,12 @@ export function PromptPanel(): React.JSX.Element {
     [charItems]
   )
   useEffect(() => {
+    // V5 uses Qwen rather than the bundled V4.5 T5 tokenizer. Hide the count until
+    // the matching Qwen tokenizer is bundled; showing a T5 count would be misleading.
+    if (isV5Model(request.model)) {
+      const timer = setTimeout(() => setTokenTotals({ pos: null, neg: null }))
+      return () => clearTimeout(timer)
+    }
     const posTexts = [request.prompt, ...enabledChars.map((c) => c.prompt)].filter((t) => t.trim())
     const negTexts = [request.negativePrompt].filter((t) => t.trim())
     if (posTexts.length === 0 && negTexts.length === 0) {
@@ -137,20 +158,43 @@ export function PromptPanel(): React.JSX.Element {
         })
     }, 250)
     return () => clearTimeout(timer)
-  }, [request.prompt, request.negativePrompt, enabledChars])
+  }, [request.model, request.prompt, request.negativePrompt, enabledChars])
 
   const anlas = useMemo(
     () =>
       estimateAnlas({
-        width: request.width,
-        height: request.height,
+        model: estimateModel,
+        width: estimateSize.width,
+        height: estimateSize.height,
         steps: request.steps,
-        charRefCount: enabledCrefs,
+        strength: effectiveGenerationStrength(
+          Boolean(source),
+          Boolean(source?.maskBase64),
+          request.i2iStrength
+        ),
+        charRefCount: capabilities.characterReferences ? enabledCrefs : 0,
         isOpus: subscriptionTier === 'opus',
+        opusUsageExhausted: opusUsage?.isNegative,
         batchCount,
-        unencodedVibes: 0 // 캐시 상태는 오버레이에서 확인 — 배지로만 안내
+        vibeCount: capabilities.vibes ? enabledVibes : 0,
+        unencodedVibes: capabilities.vibes ? unencodedVibes : 0
       }),
-    [request.width, request.height, request.steps, subscriptionTier, batchCount, enabledCrefs]
+    [
+      estimateModel,
+      estimateSize.width,
+      estimateSize.height,
+      request.steps,
+      request.i2iStrength,
+      source,
+      subscriptionTier,
+      opusUsage,
+      batchCount,
+      enabledCrefs,
+      enabledVibes,
+      unencodedVibes,
+      capabilities.characterReferences,
+      capabilities.vibes
+    ]
   )
 
   // 오버레이는 하나만 열림 — 서로 배타
@@ -235,7 +279,7 @@ export function PromptPanel(): React.JSX.Element {
             onToggle={() => setPosCollapsed((v) => !v)}
             action={
               <div className="flex items-center gap-1">
-                {promptSplitEnabled && <TokenBadge tokens={tokenTotals.pos} />}
+                {promptSplitEnabled && <TokenBadge tokens={tokenTotals.pos} limit={tokenLimit} />}
                 <SyntaxHelp />
               </div>
             }
@@ -251,6 +295,7 @@ export function PromptPanel(): React.JSX.Element {
                 className="min-h-0 flex-1"
                 value={request.prompt}
                 tokensOverride={tokenTotals.pos}
+                tokenLimit={tokenLimit}
                 placeholder="1girl, ...  (태그 자동완성 · <조각>)"
                 onValueChange={(v) => patch({ prompt: v })}
               />
@@ -286,6 +331,7 @@ export function PromptPanel(): React.JSX.Element {
               className="min-h-0 flex-1"
               value={request.negativePrompt}
               tokensOverride={tokenTotals.neg}
+              tokenLimit={tokenLimit}
               placeholder="UC 프리셋 뒤에 이어 붙습니다"
               onValueChange={(v) => patch({ negativePrompt: v })}
             />
@@ -313,14 +359,16 @@ export function PromptPanel(): React.JSX.Element {
           active={vibeOverlayOpen}
           icon={<Layers size={14} />}
           label="바이브"
-          badge={enabledVibes}
+          badge={capabilities.vibes ? enabledVibes : 0}
+          disabled={!capabilities.vibes}
           onClick={() => only('vibe')}
         />
         <ToolButton
           active={crefOverlayOpen}
           icon={<ImageUp size={14} />}
           label="레퍼런스"
-          badge={enabledCrefs}
+          badge={capabilities.characterReferences ? enabledCrefs : 0}
+          disabled={!capabilities.characterReferences}
           onClick={() => only('cref')}
         />
       </div>
@@ -393,11 +441,7 @@ export function PromptPanel(): React.JSX.Element {
             variant="accent"
             size="lg"
             className="flex-1 gap-2"
-            title={
-              anlas.free
-                ? '무료 생성 (Opus · 1024² 이하 · 28스텝 이하)'
-                : `장당 ${anlas.perImage} Anlas × ${batchCount}`
-            }
+            title={formatAnlasEstimate(anlas, batchCount)}
             onClick={() => void generate()}
           >
             생성
@@ -437,9 +481,9 @@ function CollapseHeader({
   )
 }
 
-function TokenBadge({ tokens }: { tokens: number | null }): React.JSX.Element | null {
+function TokenBadge({ tokens, limit }: { tokens: number | null; limit: number }): React.JSX.Element | null {
   if (tokens === null) return null
-  const over = tokens > TOKEN_LIMIT
+  const over = tokens > limit
   return (
     <span
       className={
@@ -448,11 +492,11 @@ function TokenBadge({ tokens }: { tokens: number | null }): React.JSX.Element | 
       }
       title={
         over
-          ? `한도 초과 — ${tokens}/${TOKEN_LIMIT} 토큰. 초과분은 잘려서 반영되지 않습니다`
-          : `최종 프롬프트 ${tokens}/${TOKEN_LIMIT} 토큰`
+          ? `한도 초과 — ${tokens}/${limit} 토큰. 초과분은 잘려서 반영되지 않습니다`
+          : `최종 프롬프트 ${tokens}/${limit} 토큰`
       }
     >
-      {tokens}/{TOKEN_LIMIT}
+      {tokens}/{limit}
     </span>
   )
 }
@@ -678,13 +722,15 @@ function ToolButton({
   icon,
   label,
   badge,
-  onClick
+  onClick,
+  disabled = false
 }: {
   active: boolean
   icon: React.ReactNode
   label: string
   badge: number
   onClick: () => void
+  disabled?: boolean
 }): React.JSX.Element {
   return (
     <div className="relative">
@@ -692,6 +738,8 @@ function ToolButton({
         variant={active ? 'default' : 'ghost'}
         className="h-8 w-full min-w-0 gap-1 px-1.5 text-[12px]"
         onClick={onClick}
+        disabled={disabled}
+        title={disabled ? '선택한 모델에서는 아직 지원하지 않습니다' : undefined}
       >
         {icon}
         <span className="min-w-0 truncate">{label}</span>

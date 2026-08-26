@@ -1,4 +1,5 @@
 import { Minus, Pencil, Plus, X } from 'lucide-react'
+import { effectiveGenerationStrength } from '@shared/anlas'
 import { kindMeta } from '../lib/kind-icon'
 import { useGenerationStore } from '../stores/generation-store'
 import { Slider } from './ui/slider'
@@ -19,7 +20,7 @@ export function SourceBanner(): React.JSX.Element | null {
 
   const isInpaint = Boolean(source.maskBase64)
   const { Icon, className } = kindMeta(isInpaint ? 'inpaint' : 'i2i')
-  const strength = request.i2iStrength ?? 0.7
+  const strength = effectiveGenerationStrength(true, isInpaint, request.i2iStrength)
   const noise = request.i2iNoise ?? 0
 
   return (

@@ -12,6 +12,7 @@ import {
 import { useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CharRefItem, CharRefType, VibeItem } from '@shared/types'
+import { useGenerationStore } from '../stores/generation-store'
 import { cn } from '../lib/utils'
 import { applyClickSelection, useSelectAllShortcut } from '../lib/edit-selection'
 import { buildDisplayRows } from '../lib/folder-list'
@@ -31,6 +32,7 @@ import { Switch } from './ui/switch'
  * 헤더: 토글 / 썸네일(호버 미리보기) / 이름. 펼치면 전체 이미지 + 파라미터.
  */
 export function RefOverlay({ kind }: { kind: 'vibe' | 'charref' }): React.JSX.Element {
+  const model = useGenerationStore((s) => s.request.model)
   const store = refsStoreFor(kind)
   const setOverlayOpen = store((s) => s.setOverlayOpen)
   const folders = store((s) => s.folders)
@@ -191,10 +193,14 @@ export function RefOverlay({ kind }: { kind: 'vibe' | 'charref' }): React.JSX.El
           <span
             className={cn(
               'size-1.5 shrink-0 rounded-full',
-              (item as VibeItem).encodedReady ? 'bg-emerald-500' : 'border border-faint'
+              (item as VibeItem).encodedModels?.includes(model)
+                ? 'bg-emerald-500'
+                : 'border border-faint'
             )}
             title={
-              (item as VibeItem).encodedReady ? '인코딩됨' : '미인코딩 (생성 시 인코딩, 2 Anlas)'
+              (item as VibeItem).encodedModels?.includes(model)
+                ? '현재 모델로 인코딩됨'
+                : '현재 모델 미인코딩 (생성 시 2 Anlas)'
             }
           />
         )}
@@ -239,7 +245,7 @@ export function RefOverlay({ kind }: { kind: 'vibe' | 'charref' }): React.JSX.El
           </Button>
         </div>
         {kind === 'vibe' ? (
-          <VibeParams item={item as VibeItem} update={update} />
+          <VibeParams item={item as VibeItem} model={model} update={update} />
         ) : (
           <CharRefParams item={item as CharRefItem} update={update} />
         )}
@@ -525,9 +531,11 @@ function ParamRow({
 
 function VibeParams({
   item,
+  model,
   update
 }: {
   item: VibeItem
+  model: string
   update: (id: number, patch: Record<string, unknown>) => void
 }): React.JSX.Element {
   return (
@@ -550,7 +558,7 @@ function VibeParams({
           onValueChange={([v]) => update(item.id, { infoExtracted: Math.round(v * 100) / 100 })}
         />
       </ParamRow>
-      {!item.encodedReady && (
+      {!item.encodedModels?.includes(model) && (
         <p className="text-[10.5px] text-faint">생성 시 인코딩 (2 Anlas, 이후 캐시)</p>
       )}
     </div>

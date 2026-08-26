@@ -89,3 +89,36 @@ describe('폴더 리스트 이동 로직 (폴더 섹션 상단 + 미분류 구�
     expect(derived.get(13)).toBe(2)
   })
 })
+
+/**
+ * 사라진 폴더를 가리키는 folderId(고아) — DB엔 남아 있는데 목록엔 안 뜨던 버그.
+ * 폴더 행이 없으면 그 folderId의 카드는 폴더 섹션에도, 미분류 섹션에도 안 걸린다.
+ */
+describe('고아 folderId 구제 (폴더가 사라진 카드)', () => {
+  const orphaned = [...items, { id: 14, folderId: 99 }] // 99번 폴더는 존재하지 않음
+
+  it('목록에 미분류로 표시된다', () => {
+    expect(keys(folders, orphaned)).toContain('i-14')
+  })
+
+  it('폴더가 하나도 없어도 표시된다 (전부 고아인 경우)', () => {
+    expect(keys([], [{ id: 14, folderId: 99 }])).toEqual(['i-14'])
+  })
+
+  it('canonicalize가 고아를 버리지 않고 미분류로 정규화한다', () => {
+    const out = canonicalize(folders, orphaned)
+    expect(out.map((i) => i.id)).toContain(14)
+    expect(out.find((i) => i.id === 14)?.folderId).toBeNull()
+  })
+
+  it('순서 저장에 포함돼 DB의 끊어진 folder_id가 NULL로 치유된다', () => {
+    const order = toOrderEntries(folders, orphaned)
+    expect(order[0]).toEqual({ type: 'char', id: 10 })
+    expect(order[1]).toEqual({ type: 'char', id: 14 }) // 미분류 구간 = 직전 폴더 없음 → NULL
+  })
+
+  it('폴더를 드래그해도 고아가 목록에서 사라지지 않는다', () => {
+    const next = moveRow(folders, orphaned, 'f-2', 'f-1')
+    expect(next.items.map((i) => i.id)).toContain(14)
+  })
+})

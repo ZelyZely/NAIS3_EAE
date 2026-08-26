@@ -26,8 +26,21 @@ export function rowKey<T extends FolderListItem>(row: DisplayRow<T>): string {
   return row.type === 'folder' ? `f-${row.folder.id}` : `i-${row.item.id}`
 }
 
+/**
+ * 사라진 폴더를 가리키는 folderId = 미분류 취급.
+ * 예전 버전/복원 과정에서 폴더 행만 없어지면 그 카드들이 어느 섹션에도 안 걸려
+ * "DB엔 있는데 화면엔 없는" 유령이 된다 — 여기서 반드시 구제한다.
+ */
+function isOrphan(folderId: number | null, folderIds: Set<number>): boolean {
+  return folderId != null && !folderIds.has(folderId)
+}
+
 export function canonicalize<T extends FolderListItem>(folders: ListFolder[], items: T[]): T[] {
-  const roots = items.filter((c) => c.folderId == null)
+  const folderIds = new Set(folders.map((f) => f.id))
+  // 고아는 folderId를 null로 정규화 — 이후 순서 저장 시 DB의 끊어진 참조도 함께 치유된다
+  const roots = items
+    .filter((c) => c.folderId == null || isOrphan(c.folderId, folderIds))
+    .map((c) => (c.folderId == null ? c : { ...c, folderId: null }))
   return [...folders.flatMap((f) => items.filter((c) => c.folderId === f.id)), ...roots]
 }
 
@@ -35,6 +48,7 @@ export function buildDisplayRows<T extends FolderListItem>(
   folders: ListFolder[],
   items: T[]
 ): DisplayRow<T>[] {
+  const folderIds = new Set(folders.map((f) => f.id))
   const rows: DisplayRow<T>[] = []
   for (const folder of folders) {
     rows.push({ type: 'folder', folder })
@@ -44,7 +58,7 @@ export function buildDisplayRows<T extends FolderListItem>(
   }
   // 폴더가 있으면 미분류 경계 표시 (여기로 드롭 = 폴더에서 빼기)
   if (folders.length > 0) rows.push({ type: 'divider' })
-  for (const item of items.filter((c) => c.folderId == null)) {
+  for (const item of items.filter((c) => c.folderId == null || isOrphan(c.folderId, folderIds))) {
     rows.push({ type: 'item', item, hidden: false })
   }
   return rows
@@ -56,11 +70,13 @@ interface Block<T extends FolderListItem> {
 }
 
 function toBlocks<T extends FolderListItem>(folders: ListFolder[], items: T[]): Block<T>[] {
+  const folderIds = new Set(folders.map((f) => f.id))
   const blocks: Block<T>[] = folders.map((folder) => ({
     folder,
     items: items.filter((c) => c.folderId === folder.id)
   }))
-  for (const item of items.filter((c) => c.folderId == null)) {
+  // 고아도 미분류 블록으로 — 폴더를 드래그했다고 카드가 목록에서 빠지면 안 된다
+  for (const item of items.filter((c) => c.folderId == null || isOrphan(c.folderId, folderIds))) {
     blocks.push({ folder: null, items: [item] })
   }
   return blocks
@@ -161,8 +177,12 @@ export function toOrderEntries<T extends FolderListItem>(
   folders: ListFolder[],
   items: T[]
 ): CharacterOrderEntry[] {
+  const folderIds = new Set(folders.map((f) => f.id))
   const order: CharacterOrderEntry[] = []
-  for (const c of items.filter((c) => c.folderId == null)) order.push({ type: 'char', id: c.id })
+  // 고아도 미분류로 함께 보내 DB의 끊어진 folder_id를 NULL로 되돌린다
+  for (const c of items.filter((c) => c.folderId == null || isOrphan(c.folderId, folderIds))) {
+    order.push({ type: 'char', id: c.id })
+  }
   for (const f of folders) {
     order.push({ type: 'folder', id: f.id })
     for (const c of items.filter((c) => c.folderId === f.id)) order.push({ type: 'char', id: c.id })

@@ -15,8 +15,8 @@ interface CharactersState {
   toggleOverlay: () => void
   setOverlayOpen: (open: boolean) => void
   load: () => Promise<void>
-  createCard: (folderId: number | null) => Promise<void>
-  updateCard: (id: number, patch: CharacterCardPatch) => void
+  createCard: (folderId: number | null, maxCharacters?: number) => Promise<void>
+  updateCard: (id: number, patch: CharacterCardPatch, maxCharacters?: number) => void
   /** 활성 캐릭터 전체 해제 */
   disableAll: () => void
   removeCard: (id: number) => void
@@ -31,7 +31,8 @@ interface CharactersState {
   move: (activeKey: string, overKey: string) => void
   /** 메타데이터의 캐릭터를 라이브러리로 가져오기 (기존 enabled는 모두 해제 후 새로 추가) */
   importFromMetadata: (
-    chars: { prompt: string; negativePrompt: string; center?: { x: number; y: number } }[]
+    chars: { prompt: string; negativePrompt: string; center?: { x: number; y: number } }[],
+    maxCharacters?: number
   ) => Promise<void>
 }
 
@@ -48,30 +49,32 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     set({ folders, items: canonicalize(folders, items), loaded: true })
   },
 
-  createCard: async (folderId) => {
+  createCard: async (folderId, maxCharacters = 6) => {
     const { id } = await window.nais.invoke('chars:create', { name: '', folderId })
+    const enabled = get().items.filter((c) => c.enabled && c.prompt.trim()).length < maxCharacters
     const card: CharacterCard = {
       id,
       name: '',
       prompt: '',
       negativePrompt: '',
       thumbnail: '',
-      enabled: true,
+      enabled,
       center: { x: 0.5, y: 0.5 },
       folderId
     }
     const { folders, items } = get()
     const next = canonicalize(folders, [...items, card])
     set({ items: next })
-    get().updateCard(id, { enabled: true })
+    get().updateCard(id, { enabled }, maxCharacters)
     void window.nais.invoke('chars:reorder', { order: toOrderEntries(folders, next) })
   },
 
-  updateCard: (id, patch) => {
-    // NAI는 캐릭터 동시 6명 초과 시 실패 — 6명 넘겨 켜는 것을 막는다
+  updateCard: (id, patch, maxCharacters = 6) => {
     if (patch.enabled === true) {
-      const enabledCount = get().items.filter((c) => c.enabled && c.id !== id).length
-      if (enabledCount >= MAX_CHARACTERS) return // 무시 (토글 안 됨)
+      const enabledCount = get().items.filter(
+        (c) => c.enabled && c.prompt.trim() && c.id !== id
+      ).length
+      if (enabledCount >= maxCharacters) return
     }
     set({ items: get().items.map((c) => (c.id === id ? { ...c, ...patch } : c)) })
     void window.nais.invoke('chars:update', { id, patch })
@@ -137,11 +140,11 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     void window.nais.invoke('chars:folderDelete', { id })
   },
 
-  importFromMetadata: async (chars) => {
+  importFromMetadata: async (chars, maxCharacters = 6) => {
     // 1) 기존 enabled 캐릭터 모두 해제 (메타 재현 = 정확히 그 캐릭터만)
     for (const c of get().items) if (c.enabled) get().updateCard(c.id, { enabled: false })
-    // 2) 메타 캐릭터를 새 카드로 생성 (가져온 캐릭터 N)
-    for (let i = 0; i < chars.length; i++) {
+    // 2) 메타 캐릭터를 모델별 상한까지 새 카드로 생성
+    for (let i = 0; i < Math.min(chars.length, maxCharacters); i++) {
       const ch = chars[i]
       const { id } = await window.nais.invoke('chars:create', {
         name: `가져온 캐릭터 ${i + 1}`,
@@ -158,13 +161,17 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
         folderId: null
       }
       set({ items: canonicalize(get().folders, [...get().items, card]) })
-      get().updateCard(id, {
-        name: card.name,
-        prompt: card.prompt,
-        negativePrompt: card.negativePrompt,
-        enabled: true,
-        center: card.center
-      })
+      get().updateCard(
+        id,
+        {
+          name: card.name,
+          prompt: card.prompt,
+          negativePrompt: card.negativePrompt,
+          enabled: true,
+          center: card.center
+        },
+        maxCharacters
+      )
     }
   },
 
@@ -177,9 +184,6 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
 }))
 
 /** 생성에 포함될 캐릭터 (정규 순서 = v4 use_order 순서) */
-/** NAI 동시 캐릭터 상한 (초과 시 API 실패) */
-export const MAX_CHARACTERS = 6
-
 export function enabledCharacters(): CharacterCard[] {
   return useCharactersStore.getState().items.filter((c) => c.enabled && c.prompt.trim())
 }

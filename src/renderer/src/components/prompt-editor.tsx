@@ -41,15 +41,14 @@ const TYPE_COLORS: Record<string, string> = {
   meta: 'text-[#c9a34f]'
 }
 
-const TOKEN_LIMIT = 512
-
 export function PromptEditor({
   value,
   onValueChange,
   placeholder,
   className,
   negative = false,
-  tokensOverride
+  tokensOverride,
+  tokenLimit = 512
 }: {
   value: string
   onValueChange: (value: string) => void
@@ -58,6 +57,7 @@ export function PromptEditor({
   negative?: boolean
   /** 외부에서 합산한 토큰 수 (기본+캐릭터 합산 등). undefined면 자체 카운트, null이면 숨김 */
   tokensOverride?: number | null
+  tokenLimit?: number
 }): React.JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const mirrorRef = useRef<HTMLDivElement>(null)
@@ -418,15 +418,15 @@ export function PromptEditor({
         <span
           className={cn(
             'pointer-events-none absolute bottom-1 right-1.5 rounded bg-paper/85 px-1 font-mono text-[10.5px] backdrop-blur-sm',
-            tokens > TOKEN_LIMIT ? 'text-danger' : 'text-faint'
+            tokens > tokenLimit ? 'text-danger' : 'text-faint'
           )}
           title={
-            tokens > TOKEN_LIMIT
-              ? `한도 초과 — ${tokens}/${TOKEN_LIMIT} 토큰. 초과분은 잘려서 반영되지 않습니다`
-              : `${tokens}/${TOKEN_LIMIT} 토큰`
+            tokens > tokenLimit
+              ? `한도 초과 — ${tokens}/${tokenLimit} 토큰. 초과분은 잘려서 반영되지 않습니다`
+              : `${tokens}/${tokenLimit} 토큰`
           }
         >
-          {tokens}/{TOKEN_LIMIT}
+          {tokens}/{tokenLimit}
         </span>
       )}
 

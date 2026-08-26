@@ -335,5 +335,22 @@ export const migrations: ((db: Database.Database) => void)[] = [
       );
       ALTER TABLE scene_presets ADD COLUMN folder_id INTEGER REFERENCES scene_preset_folders(id) ON DELETE SET NULL;
     `)
+  },
+
+  // v18: 끊어진 folder_id 치유 (upstream) — 폴더 행이 사라졌는데 folder_id가 남은 항목은
+  // 어느 섹션에도 안 걸려 목록에서 통째로 사라진다("삭제는 안 됐는데 안 보임").
+  // 미분류(NULL)로 되돌려 반드시 보이게 한다. 정상 DB에서는 0건 업데이트.
+  (db) => {
+    for (const [items, folders] of [
+      ['character_prompts', 'character_folders'],
+      ['fragments', 'fragment_folders'],
+      ['vibe_images', 'vibe_folders'],
+      ['charref_images', 'charref_folders']
+    ]) {
+      db.exec(
+        `UPDATE ${items} SET folder_id = NULL
+         WHERE folder_id IS NOT NULL AND folder_id NOT IN (SELECT id FROM ${folders});`
+      )
+    }
   }
 ]

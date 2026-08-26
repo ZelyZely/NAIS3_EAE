@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { ImageMetadata, UcPresetIndex } from '@shared/types'
 import { QUALITY_TAGS_SUFFIX, UC_PRESETS_V45_FULL } from '@shared/nai-presets'
+import { modelCapabilities } from '@shared/nai-models'
 import { imageUrl } from '../lib/constants'
 import { useCharactersStore } from './characters-store'
 import { mergePromptParts, useGenerationStore } from './generation-store'
@@ -131,7 +132,10 @@ export const useMetadataStore = create<MetadataState>((set, get) => ({
     }
     if (sel.seed && m.seed != null) gen.setSeedLocked(true)
     if (sel.characters) {
-      void useCharactersStore.getState().importFromMetadata(m.characterPrompts ?? [])
+      const model = useGenerationStore.getState().request.model
+      void useCharactersStore
+        .getState()
+        .importFromMetadata(m.characterPrompts ?? [], modelCapabilities(model).maxCharacters)
     }
     useLayoutStore.getState().setCenterMode('main')
     set({ open: false })

@@ -4,6 +4,7 @@ import { basename, extname, join } from 'path'
 import { randomUUID } from 'crypto'
 import sharp from 'sharp'
 import type { CharacterOrderEntry, CharRefItem, ListFolder, VibeItem } from '../../shared/types'
+import { vibeEncodingModels } from './vibe-encoding-cache'
 import { getDb } from '../db'
 
 /**
@@ -58,7 +59,8 @@ export function listVibes(): { folders: ListFolder[]; items: VibeItem[] } {
       enabled: r.enabled === 1,
       strength: r.strength,
       infoExtracted: r.info_extracted,
-      encodedReady: r.encoded !== null && r.encoded_ie === r.info_extracted,
+      encodedReady: vibeEncodingModels(r.encoded, r.encoded_ie, r.info_extracted).length > 0,
+      encodedModels: vibeEncodingModels(r.encoded, r.encoded_ie, r.info_extracted),
       folderId: r.folder_id
     }))
   }

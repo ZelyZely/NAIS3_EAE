@@ -32,6 +32,101 @@ const baseRequest: GenerationRequest = {
 }
 
 describe('payload builder', () => {
+  it('V5는 params v4·새 프리셋 힌트·고정 Karras를 보내고 Variety+는 보내지 않는다', () => {
+    const p = buildGenerateImagePayload({
+      ...baseRequest,
+      model: 'nai-diffusion-5-full',
+      cfgScale: 7,
+      variety: true,
+      qualityToggle: true,
+      ucPreset: 1
+    })
+    expect(p.parameters.params_version).toBe(4)
+    expect(p.parameters.noise_schedule).toBe('karras')
+    expect(p.parameters).not.toHaveProperty('skip_cfg_above_sigma')
+    expect(p.parameters.tag_hint_qt).toBe(1)
+    expect(p.parameters.tag_hint_uc_preset).toBe(3)
+    expect(p.input).toBe('1girl, silver hair, very aesthetic, masterpiece, no text')
+    expect(p.parameters.negative_prompt).toBe(
+      'nsfw, lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, very displeasing, jpeg artifacts, 0::ai-generated::, lowres'
+    )
+  })
+
+  it('V5 Curated UC에는 Full 전용 nsfw 자동 프리픽스를 붙이지 않는다', () => {
+    const p = buildGenerateImagePayload({
+      ...baseRequest,
+      model: 'nai-diffusion-5-curated',
+      ucPreset: 0
+    })
+    expect(p.parameters.negative_prompt).not.toMatch(/^nsfw, /)
+  })
+
+  it('V5 투명 배경은 태그·straight alpha·서버 힌트를 함께 보낸다', () => {
+    const p = buildGenerateImagePayload(
+      { ...baseRequest, model: 'nai-diffusion-5-curated', qualityToggle: true },
+      { transparentBackground: true }
+    )
+    expect(p.input).toContain('transparent background')
+    expect(p.parameters.straight_alpha).toBe(true)
+    expect(p.parameters.tag_hint_transparent_background).toBe(true)
+  })
+
+  it('V5에서는 출시 시점 미지원 바이브·정밀 레퍼런스를 payload에서 제외한다', () => {
+    const p = buildGenerateImagePayload(
+      { ...baseRequest, model: 'nai-diffusion-5-curated' },
+      {
+        vibes: [{ strength: 0.6, encodedVibeBase64: 'vibe' }],
+        characterReferences: [
+          { referenceType: 'character', strength: 1, fidelity: 1, imageBase64: 'ref' }
+        ]
+      }
+    )
+    expect(p.parameters).not.toHaveProperty('reference_image_multiple')
+    expect(p.parameters).not.toHaveProperty('director_reference_images')
+  })
+
+  it('V5 i2i는 V5 모델·params v4·img2img 파라미터를 유지한다', () => {
+    const p = buildGenerateImagePayload(
+      { ...baseRequest, model: 'nai-diffusion-5-full' },
+      {
+        i2i: {
+          strength: 0.7,
+          noise: 0,
+          extraNoiseSeed: 123,
+          colorCorrect: false,
+          imageBase64: 'source'
+        }
+      }
+    )
+    expect(p.action).toBe('img2img')
+    expect(p.model).toBe('nai-diffusion-5-full')
+    expect(p.parameters.params_version).toBe(4)
+    expect(p.parameters.strength).toBe(0.7)
+    expect(p.parameters.image).toBe('source')
+  })
+
+  it('V5 Full 인페인트는 전용 모델과 NativeInfillingRequest payload를 쓴다', () => {
+    const p = buildGenerateImagePayload(
+      { ...baseRequest, model: 'nai-diffusion-5-full-inpainting' },
+      {
+        i2i: {
+          strength: 1,
+          noise: 0,
+          extraNoiseSeed: 123,
+          colorCorrect: false,
+          imageBase64: 'source',
+          maskBase64: 'mask'
+        }
+      }
+    )
+    expect(p.action).toBe('infill')
+    expect(p.model).toBe('nai-diffusion-5-full-inpainting')
+    expect(p.parameters.params_version).toBe(4)
+    expect(p.parameters.request_type).toBe('NativeInfillingRequest')
+    expect(p.parameters.inpaintImg2ImgStrength).toBe(1)
+    expect(p.parameters.mask).toBe('mask')
+  })
+
   it('주석은 #로 시작하는 줄만 (NAIS2 동일) — 줄 중간 #는 태그의 일부로 유지', () => {
     expect(removeComments('a\n# comment\nb')).toBe('a\nb')
     expect(removeComments('  # indented comment\nkeep')).toBe('keep')
@@ -90,6 +185,21 @@ describe('payload builder', () => {
         varietySigma({ model: 'nai-diffusion-4-5-full', variety: false, width: 832, height: 1216 })
       ).toBeNull()
     })
+  })
+
+  it('V5는 최대 32개의 활성 캐릭터 프롬프트만 보낸다', () => {
+    const p = buildGenerateImagePayload({
+      ...baseRequest,
+      model: 'nai-diffusion-5-full',
+      characterPrompts: Array.from({ length: 33 }, (_, i) => ({
+        prompt: `character ${i}`,
+        negativePrompt: '',
+        enabled: true
+      }))
+    })
+    const v4 = p.parameters.v4_prompt as { caption: { char_captions: unknown[] } }
+    expect(v4.caption.char_captions).toHaveLength(32)
+    expect(p.parameters.characterPrompts).toHaveLength(32)
   })
 
   it('비활성 캐릭터 프롬프트는 payload에 들어가지 않는다', () => {

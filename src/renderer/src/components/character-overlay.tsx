@@ -16,10 +16,11 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CharacterCard } from '@shared/types'
+import { canEnableAnotherCharacter, isV5Model, modelCapabilities } from '@shared/nai-models'
 import { cn } from '../lib/utils'
 import { applyClickSelection, useSelectAllShortcut } from '../lib/edit-selection'
 import { buildDisplayRows } from '../lib/folder-list'
-import { useCharactersStore, MAX_CHARACTERS } from '../stores/characters-store'
+import { useCharactersStore } from '../stores/characters-store'
 import { useGenerationStore } from '../stores/generation-store'
 import { askConfirm, askText } from '../stores/dialog-store'
 import { FolderListView } from './folder-list-view'
@@ -78,7 +79,9 @@ export function CharacterOverlay(): React.JSX.Element {
   const removeFolder = useCharactersStore((s) => s.removeFolder)
   const move = useCharactersStore((s) => s.move)
   const useCoords = useGenerationStore((s) => s.request.useCoords)
+  const model = useGenerationStore((s) => s.request.model)
   const patch = useGenerationStore((s) => s.patchRequest)
+  const maxCharacters = modelCapabilities(model).maxCharacters
 
   const [search, setSearch] = useState('')
   const [expandedId, setExpandedId] = useState<number | null>(null)
@@ -164,7 +167,7 @@ export function CharacterOverlay(): React.JSX.Element {
   )
   const [charTokens, setCharTokens] = useState<number | null>(null)
   useEffect(() => {
-    if (positiveTexts.length === 0) {
+    if (isV5Model(model) || positiveTexts.length === 0) {
       const timer = setTimeout(() => setCharTokens(null))
       return () => clearTimeout(timer)
     }
@@ -175,7 +178,7 @@ export function CharacterOverlay(): React.JSX.Element {
       })
     }, 300)
     return () => clearTimeout(timer)
-  }, [positiveTexts])
+  }, [model, positiveTexts])
 
   // 편집 모드 헤더 — 선택 전용 행 (스위치/좌표 등 상호작용 제거)
   const renderHeaderEdit = (char: CharacterCard): React.ReactNode => {
@@ -217,7 +220,13 @@ export function CharacterOverlay(): React.JSX.Element {
       data-char-card
       className={cn('flex h-10 items-center gap-2 px-2', !char.enabled && 'opacity-55')}
     >
-      <Switch checked={char.enabled} onCheckedChange={(v) => updateCard(char.id, { enabled: v })} />
+      <Switch
+        checked={char.enabled}
+        onCheckedChange={(v) => {
+          if (v && !canEnableAnotherCharacter(model, enabledCount)) return
+          updateCard(char.id, { enabled: v }, maxCharacters)
+        }}
+      />
       {char.thumbnail ? (
         <img
           src={`data:image/webp;base64,${char.thumbnail}`}
@@ -331,13 +340,13 @@ export function CharacterOverlay(): React.JSX.Element {
           <span
             className={cn(
               'rounded-full px-1.5 font-mono text-[10.5px]',
-              enabledCount >= MAX_CHARACTERS
+              enabledCount >= maxCharacters
                 ? 'bg-danger/15 text-danger'
                 : 'bg-accent-soft text-accent'
             )}
-            title={`활성 캐릭터 ${enabledCount}/${MAX_CHARACTERS} (NAI는 6명까지)`}
+            title={`활성 캐릭터 ${enabledCount}/${maxCharacters}`}
           >
-            {enabledCount}/{MAX_CHARACTERS}
+            {enabledCount}/{maxCharacters}
           </span>
         )}
         {enabledCount > 0 && (
@@ -351,7 +360,7 @@ export function CharacterOverlay(): React.JSX.Element {
             전체 해제
           </Button>
         )}
-        {charTokens !== null && (
+        {!isV5Model(model) && charTokens !== null && (
           <span
             className={cn(
               'font-mono text-[10.5px]',
@@ -398,7 +407,12 @@ export function CharacterOverlay(): React.JSX.Element {
         >
           <CheckSquare size={14} />
         </Button>
-        <Button size="sm" variant="accent" className="gap-1" onClick={() => void createCard(null)}>
+        <Button
+          size="sm"
+          variant="accent"
+          className="gap-1"
+          onClick={() => void createCard(null, maxCharacters)}
+        >
           <Plus size={13} /> 캐릭터
         </Button>
       </div>
@@ -461,7 +475,7 @@ export function CharacterOverlay(): React.JSX.Element {
             toggleCollapse,
             setColor: setFolderColor,
             remove: removeFolder,
-            addItem: (folderId) => void createCard(folderId)
+            addItem: (folderId) => void createCard(folderId, maxCharacters)
           }}
           onMove={move}
           itemClassName={(char) =>

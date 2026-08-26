@@ -1,4 +1,5 @@
 import {
+  BatteryCharging,
   Coins,
   Download,
   Eye,
@@ -13,7 +14,9 @@ import {
   Trash2,
   Upload
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { displayOpusUsagePercent, opusUsagePercentSegments } from '@shared/anlas'
+import type { NaiAccountInfo } from '@shared/types'
 import discordSvg from '../assets/discord.svg'
 import nais3Logo from '../assets/nais3-logo.svg'
 import { playChime } from '../lib/completion-alert'
@@ -134,7 +137,7 @@ function AppearanceSection(): React.JSX.Element {
           onValueChange={([v]) => setPromptSize(v)}
         />
       </Row>
-      <Row label="표시할 탭" hint="끈 탭은 상단에서 숨김 (메인은 항상 표시)">
+      <Row label="표시할 탭" hint="끈 탭은 상단에서 숨김">
         <PageToggles />
       </Row>
     </div>
@@ -539,78 +542,138 @@ function ShortcutsSection(): React.JSX.Element {
 
 function AccountSection(): React.JSX.Element {
   const [draft, setDraft] = useState('')
+  const [label, setLabel] = useState('')
   const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'fail'>('idle')
   const [message, setMessage] = useState('')
-  const [info, setInfo] = useState<{ hasToken: boolean; prefix: string; length: number }>({
-    hasToken: false,
-    prefix: '',
-    length: 0
-  })
-  const [revealed, setRevealed] = useState('')
+  const [accounts, setAccounts] = useState<NaiAccountInfo[]>([])
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [usage, setUsage] = useState<{ today: number; week: number } | null>(null)
   const anlasBalance = useGenerationStore((s) => s.anlasBalance)
+  const opusUsage = useGenerationStore((s) => s.opusUsage)
+  const subscriptionTier = useGenerationStore((s) => s.subscriptionTier)
   const refreshAnlas = useGenerationStore((s) => s.refreshAnlas)
 
-  const refresh = (): void => {
-    void window.nais.invoke('nai:tokenStatus', undefined).then(setInfo)
-    void window.nais.invoke('nai:anlasUsage', undefined).then(setUsage)
-  }
-  useEffect(refresh, [])
+  const refresh = useCallback(
+    (includeBalance = true): void => {
+      void window.nais.invoke('nai:listAccounts', undefined).then(({ accounts: next }) => {
+        setAccounts(next)
+      })
+      void window.nais.invoke('nai:anlasUsage', undefined).then(setUsage)
+      if (includeBalance) void refreshAnlas().catch(() => undefined)
+    },
+    [refreshAnlas]
+  )
+  useEffect(() => {
+    refresh()
+    return window.nais.on('nai:accountChanged', () => refresh(false))
+  }, [refresh])
 
-  // WHIMS 프로바이더 키 패턴: pst-************** + 눈 아이콘으로 공개 토글
-  const masked = info.hasToken
-    ? `${info.prefix}${'*'.repeat(Math.max(0, info.length - info.prefix.length))}`
-    : ''
-  const inputValue = info.hasToken ? revealed || masked : draft
-
-  async function toggleReveal(): Promise<void> {
-    if (revealed) {
-      setRevealed('')
+  async function toggleReveal(id: string): Promise<void> {
+    if (revealed[id]) {
+      setRevealed((current) => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
       return
     }
-    const { token } = await window.nais.invoke('nai:revealToken', undefined)
-    setRevealed(token ?? '')
+    const { token } = await window.nais.invoke('nai:revealAccountToken', { id })
+    if (token) setRevealed((current) => ({ ...current, [id]: token }))
   }
 
-  async function saveToken(): Promise<void> {
+  async function addAccount(): Promise<void> {
     if (!draft.trim()) return
     setStatus('checking')
-    const result = await window.nais.invoke('nai:setToken', { token: draft.trim() })
+    const result = await window.nais.invoke('nai:addAccount', {
+      token: draft.trim(),
+      ...(label.trim() ? { label: label.trim() } : {})
+    })
     if (result.valid) {
       setStatus('ok')
       if (result.subscription) {
         useGenerationStore.getState().setSubscriptionTier(result.subscription.tier)
       }
-      setMessage(`연결됨 — ${result.subscription?.tier ?? '?'}`)
+      setMessage(`계정 추가됨 — ${result.subscription?.tier ?? '?'}`)
       setDraft('')
-      setRevealed('')
+      setLabel('')
       refresh()
-      void refreshAnlas()
     } else {
       setStatus('fail')
       setMessage(result.error ?? '토큰 검증 실패')
     }
   }
 
-  function deleteToken(): void {
-    void window.nais.invoke('nai:deleteToken', undefined).then(() => {
-      setRevealed('')
-      setDraft('')
-      setStatus('idle')
-      useGenerationStore.setState({ anlasBalance: null })
-      refresh()
-    })
+  async function activateAccount(id: string): Promise<void> {
+    setBusyId(id)
+    try {
+      const result = await window.nais.invoke('nai:setActiveAccount', { id })
+      if (result.active) {
+        useGenerationStore.setState({
+          anlasBalance: result.anlas,
+          opusUsage: result.usage ?? null,
+          subscriptionTier: result.tier
+        })
+      }
+      refresh(false)
+    } finally {
+      setBusyId(null)
+    }
   }
 
+  async function removeAccount(account: NaiAccountInfo): Promise<void> {
+    const ok = await askConfirm(`“${account.label}” 계정을 삭제할까요?`, {
+      message: '저장된 API 토큰만 삭제되며 NovelAI 계정 자체에는 영향이 없습니다.',
+      confirmLabel: '삭제',
+      danger: true
+    })
+    if (!ok) return
+    setBusyId(account.id)
+    try {
+      const { activeId } = await window.nais.invoke('nai:deleteAccount', { id: account.id })
+      setRevealed((current) => {
+        const next = { ...current }
+        delete next[account.id]
+        return next
+      })
+      if (!activeId) {
+        useGenerationStore.setState({
+          anlasBalance: null,
+          opusUsage: null,
+          subscriptionTier: null
+        })
+      } else {
+        void refreshAnlas().catch(() => undefined)
+      }
+      refresh(false)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const activeAccount = accounts.find((account) => account.active)
+
   return (
-    <div className="flex h-full flex-col gap-2">
-      <p className="text-[13px] text-ink">NAI API 토큰</p>
-      <p className="text-[11.5px] text-faint">OS 키체인으로 암호화되어 저장됩니다.</p>
-      <div className="flex gap-1.5">
+    <div className="flex min-h-full min-w-0 flex-col gap-3 overflow-x-hidden">
+      <div className="min-w-0">
+        <p className="text-[13px] text-ink">NAI 계정</p>
+        <p className="mt-0.5 text-[11.5px] text-faint">
+          토큰은 OS 키체인으로 암호화됩니다. V5 게이지가 0%가 되면 다음 Opus 계정으로 자동
+          전환합니다.
+        </p>
+      </div>
+
+      <div className="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)_auto] gap-1.5">
         <Input
-          className={cn(info.hasToken && 'cursor-default font-mono')}
-          value={inputValue}
-          readOnly={info.hasToken}
+          className="w-28 shrink-0"
+          value={label}
+          placeholder={`계정 ${accounts.length + 1}`}
+          maxLength={60}
+          onChange={(e) => setLabel(e.target.value)}
+        />
+        <Input
+          className="min-w-0 font-mono"
+          value={draft}
           placeholder="pst-..."
           autoComplete="off"
           spellCheck={false}
@@ -618,42 +681,126 @@ function AccountSection(): React.JSX.Element {
             setDraft(e.target.value)
             setStatus('idle')
           }}
-          onKeyDown={(e) => e.key === 'Enter' && void saveToken()}
+          onKeyDown={(e) => e.key === 'Enter' && void addAccount()}
         />
-        {info.hasToken ? (
-          <>
-            <Button
-              size="icon"
-              variant="default"
-              title={revealed ? '토큰 숨기기' : '토큰 보기'}
-              onClick={() => void toggleReveal()}
-            >
-              {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
-            </Button>
-            <Button
-              size="icon"
-              variant="default"
-              className="hover:text-danger"
-              title="토큰 삭제"
-              onClick={deleteToken}
-            >
-              <Trash2 size={14} />
-            </Button>
-          </>
-        ) : (
-          <Button
-            variant="accent"
-            disabled={status === 'checking'}
-            onClick={() => void saveToken()}
-          >
-            {status === 'checking' ? '확인 중…' : '저장'}
-          </Button>
-        )}
+        <Button variant="accent" disabled={status === 'checking'} onClick={() => void addAccount()}>
+          {status === 'checking' ? '확인 중…' : '추가'}
+        </Button>
       </div>
       {status === 'ok' && <span className="text-[12px] text-accent">{message}</span>}
       {status === 'fail' && <span className="text-[12px] text-danger">{message}</span>}
 
-      <div className="flex-1" />
+      <div className="min-w-0 space-y-1.5">
+        {accounts.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-line p-4 text-center text-[11.5px] text-faint">
+            등록된 계정이 없습니다.
+          </div>
+        ) : (
+          accounts.map((account) => {
+            const percent = account.usage ? displayOpusUsagePercent(account.usage) : null
+            const masked = `${account.prefix}${'*'.repeat(Math.max(4, account.length - 8))}${account.suffix}`
+            return (
+              <div
+                key={account.id}
+                className={cn(
+                  'flex min-w-0 items-center gap-2 overflow-hidden rounded-lg border bg-surface-2/40 p-2.5',
+                  account.active ? 'border-accent/70' : 'border-line'
+                )}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  disabled={busyId !== null || account.active}
+                  onClick={() => void activateAccount(account.id)}
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate text-[12.5px] font-medium text-ink">
+                      {account.label}
+                    </span>
+                    {account.active && (
+                      <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[9.5px] text-accent">
+                        사용 중
+                      </span>
+                    )}
+                    {account.tier && (
+                      <span className="text-[10px] uppercase text-faint">{account.tier}</span>
+                    )}
+                  </div>
+                  <p className="mt-1 truncate font-mono text-[10.5px] text-faint">
+                    {revealed[account.id] ?? masked}
+                  </p>
+                  <p className="mt-1 text-[10.5px] text-muted">
+                    {account.tier === 'opus'
+                      ? percent === null
+                        ? 'V5 게이지 확인 불가'
+                        : `V5 ${percent}%${account.usage?.isNegative ? ' · 소진' : ''}`
+                      : account.tier
+                        ? `Anlas ${account.anlas?.toLocaleString() ?? '—'}`
+                        : '상태 확인 불가'}
+                  </p>
+                </button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  title={revealed[account.id] ? '토큰 숨기기' : '토큰 보기'}
+                  onClick={() => void toggleReveal(account.id)}
+                >
+                  {revealed[account.id] ? <EyeOff size={14} /> : <Eye size={14} />}
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="hover:text-danger"
+                  disabled={busyId !== null}
+                  title="계정 삭제"
+                  onClick={() => void removeAccount(account)}
+                >
+                  <Trash2 size={14} />
+                </Button>
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      {activeAccount && subscriptionTier === 'opus' && (
+        <div className="rounded-lg border border-line bg-surface-2/50 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink">
+              <BatteryCharging
+                size={13}
+                className={opusUsage?.isNegative ? 'text-danger' : 'text-accent'}
+              />
+              V5 사용량
+            </p>
+            <span className="font-mono text-[15px] text-ink">
+              {opusUsage ? `${displayOpusUsagePercent(opusUsage)}%` : '—'}
+            </span>
+          </div>
+          <div className="flex h-2 gap-1">
+            {(opusUsage ? opusUsagePercentSegments(opusUsage) : [0]).map((percent, index) => (
+              <div key={index} className="h-full flex-1 overflow-hidden rounded-full bg-paper">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-[width] duration-300',
+                    opusUsage?.isNegative ? 'bg-danger' : 'bg-accent'
+                  )}
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[10.5px] text-faint">
+            {opusUsage
+              ? opusUsage.isNegative
+                ? accounts.length > 1
+                  ? '소진됨 · 다음 V5 생성 전에 사용 가능한 계정으로 전환합니다.'
+                  : '소진됨 · 충전될 때까지 V5 생성에 Anlas를 사용합니다.'
+                : `다음 1%까지 약 ${Math.max(0, opusUsage.timeUntilNextPercent / 3600).toFixed(1)}시간`
+              : '사용량을 확인하고 있습니다.'}
+          </p>
+        </div>
+      )}
 
       {/* Anlas 사용량 — 잔액 스냅샷 간 감소분 합산 */}
       <div className="rounded-lg border border-line bg-surface-2/50 p-3">
@@ -791,7 +938,7 @@ export function SettingsDialog({
                 {NAV.find((n) => n.id === section)?.label}
               </h2>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 no-scrollbar">
+            <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-5 no-scrollbar">
               <TabsContent value="appearance" className="m-0">
                 <AppearanceSection />
               </TabsContent>
@@ -804,7 +951,7 @@ export function SettingsDialog({
               <TabsContent value="shortcuts" className="m-0">
                 <ShortcutsSection />
               </TabsContent>
-              <TabsContent value="account" className="m-0 h-full">
+              <TabsContent value="account" className="m-0 min-h-full min-w-0">
                 <AccountSection />
               </TabsContent>
               <TabsContent value="about" className="m-0">
