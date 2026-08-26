@@ -911,7 +911,10 @@ export function SettingsDialog({
         <Tabs
           value={section}
           onValueChange={(v) => setSection(v as SectionId)}
-          className="flex h-full min-h-0"
+          // DialogContent가 grid-template-columns 미지정 grid라 암시적 컬럼이 자동생성되는데,
+          // grid item 기본값(min-width: auto)이 마스킹 토큰 같은 긴 nowrap 텍스트의 min-content
+          // 폭을 그대로 떠받쳐 다이얼로그 밖으로 밀려나가게 만든다 — min-w-0으로 강제 축소 허용
+          className="flex h-full min-h-0 min-w-0"
           orientation="vertical"
         >
           <nav className="flex w-40 shrink-0 flex-col border-r border-line bg-surface-2/50 p-2">
