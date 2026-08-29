@@ -44,3 +44,13 @@ export function imageUrl(filePath: string): string {
 export function sceneThumbUrl(sceneId: number): string {
   return `nais-image://local/?scene=${sceneId}`
 }
+
+/** 라이브러리 카드 썸네일 — 씬 카드와 같은 지연 로드 (목록 응답에 base64 미포함) */
+export function libraryThumbUrl(imageId: number): string {
+  return `nais-image://local/?libImage=${imageId}`
+}
+
+/** 라이브러리 스택 대표 썸네일 */
+export function libraryStackCoverUrl(stackId: number): string {
+  return `nais-image://local/?libStack=${stackId}`
+}

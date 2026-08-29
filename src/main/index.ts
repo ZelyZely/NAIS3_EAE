@@ -20,6 +20,7 @@ import {
   thumbnailByPath
 } from './images/storage'
 import { broadcast, registerIpcHandlers } from './ipc'
+import { libraryStackCover, libraryThumbnail } from './library/repo'
 import { setupUpdater } from './updater'
 import { logBalance } from './nai/anlas-log'
 import { fetchAnlasBalance, generateImageStream, generateImageZip } from './nai/client'
@@ -111,6 +112,18 @@ app.whenReady().then(() => {
     const sceneId = url.searchParams.get('scene')
     if (sceneId) {
       const buf = sceneThumbnail(Number(sceneId))
+      if (!buf) return new Response('gone', { status: 404 })
+      return new Response(new Uint8Array(buf), {
+        headers: { 'content-type': 'image/webp', 'cache-control': 'no-store' }
+      })
+    }
+    // 라이브러리 카드/스택 커버도 같은 지연 로드 — 목록 응답에 base64를 싣지 않는다
+    const libImageId = url.searchParams.get('libImage')
+    const libStackId = url.searchParams.get('libStack')
+    if (libImageId || libStackId) {
+      const buf = libImageId
+        ? libraryThumbnail(Number(libImageId))
+        : libraryStackCover(Number(libStackId))
       if (!buf) return new Response('gone', { status: 404 })
       return new Response(new Uint8Array(buf), {
         headers: { 'content-type': 'image/webp', 'cache-control': 'no-store' }

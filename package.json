@@ -1,6 +1,6 @@
 {
   "name": "nais3-eae",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "description": "NAIS3 EAE - NovelAI Image Studio 3 (Fork)",
   "main": "./out/main/index.js",
   "author": "sunanakgo",

@@ -352,5 +352,26 @@ export const migrations: ((db: Database.Database) => void)[] = [
          WHERE folder_id IS NOT NULL AND folder_id NOT IN (SELECT id FROM ${folders});`
       )
     }
+  },
+
+  // v19: images(scene_id, favorite) 복합 인덱스 + ANALYZE.
+  //
+  // 없을 때 무슨 일이 일어났나: 씬 목록 쿼리의
+  //   EXISTS(SELECT 1 FROM images WHERE scene_id = s.id AND favorite = 1)
+  // 를 SQLite가 idx_images_scene 대신 idx_images_favorite(favorite)로 풀었다. 통계
+  // 테이블(sqlite_stat1)이 없어 단일 컬럼 equality를 선택적이라 가정한 탓. 그러면
+  // favorite=1인 행 전체를 테이블에서 꺼내 scene_id를 확인해야 하는데, scene_id는
+  // thumbnail BLOB(평균 46KB) + payload_json 뒤에 있는 마지막 컬럼이라 레코드마다
+  // overflow 페이지 체인을 끝까지 걸어야 도달한다 — 씬 1개당 58ms, 172씬 프리셋이면
+  // 9.6초 동안 메인 프로세스가 통째로 멈췄다 (better-sqlite3는 동기).
+  //
+  // favorite DESC로 만드는 이유: sceneThumbnail의 ORDER BY favorite DESC, id DESC가
+  // 임시 B-tree 정렬 없이 이 인덱스만으로 끝난다. EXISTS 쪽은 equality라 방향 무관.
+  // ANALYZE는 이후 플래너가 다시 헛짚지 않도록 통계를 남긴다.
+  (db) => {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_images_scene_fav ON images(scene_id, favorite DESC, id DESC);
+      ANALYZE;
+    `)
   }
 ]

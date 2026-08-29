@@ -429,13 +429,13 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('scenes:bulkClearFavorites', ({ ids }) => {
     bulkClearFavorites(ids)
   })
-  handle('scenes:bulkClearImages', ({ ids }) => ({ deleted: bulkClearImages(ids) }))
+  handle('scenes:bulkClearImages', async ({ ids }) => ({ deleted: await bulkClearImages(ids) }))
   handle('scenes:bulkExportZip', async ({ ids }) => ({ count: await bulkExportZip(ids) }))
   handle('scenes:images', ({ sceneId, limit, offset, favoritesOnly }) =>
     sceneImages(sceneId, limit, offset, favoritesOnly)
   )
-  handle('scenes:deleteNonFavorites', ({ sceneId }) => ({
-    deleted: deleteNonFavorites(sceneId)
+  handle('scenes:deleteNonFavorites', async ({ sceneId }) => ({
+    deleted: await deleteNonFavorites(sceneId)
   }))
   handle('images:setFavorite', ({ id, favorite }) => {
     setImageFavorite(id, favorite)
@@ -444,7 +444,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
     // deleteFile 미지정(히스토리 삭제) — "히스토리 삭제 시 파일도 삭제" 설정을 따른다
     deleteImage(id, deleteFile ?? getSetting('history_delete_file') === '1')
   })
-  handle('images:clearAll', () => ({ count: clearAllImages() }))
+  handle('images:clearAll', async () => ({ count: await clearAllImages() }))
 
   // 라이브러리 — 큐레이션 컬렉션
   handle('library:list', ({ stackId, limit, offset }) => listLibrary(stackId, limit, offset))

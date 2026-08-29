@@ -11,6 +11,7 @@ import {
   writeFileSync,
   type FSWatcher
 } from 'fs'
+import { unlink } from 'fs/promises'
 import { dirname, extname, isAbsolute, join, relative } from 'path'
 import JSZip from 'jszip'
 import sharp from 'sharp'
@@ -437,6 +438,9 @@ function scenePathOf(sceneId: number): string | null {
 
 const EXTERNAL_IMAGE_EXTS = new Set(['.png', '.webp', '.jpg', '.jpeg'])
 
+/** 동시에 돌릴 sharp 썸네일 생성 수 (libuv 기본 스레드풀 크기에 맞춤) */
+const THUMB_CONCURRENCY = 4
+
 /**
  * 씬 폴더를 스캔해 DB에 없는 파일(탐색기로 직접 넣은 이미지 등)을 자동 등록한다.
  * seed/생성 payload 없이 kind='scene'으로만 넣는다 — 메타데이터 재현은 안 되지만 목록엔 뜬다.
@@ -464,25 +468,43 @@ export async function syncSceneImages(
      VALUES (?, ?, 'scene', NULL, '{}', ?)`
   )
 
-  let added = 0
-  let lastFilePath: string | null = null
+  // 대상 파일을 먼저 추린 뒤 썸네일 생성만 병렬로 돌린다. sharp는 libuv 스레드풀에서
+  // 도는 비동기 작업이라 한 장씩 await 하면 코어를 하나만 쓰고 그만큼 오래 걸린다.
+  // DB 삽입은 better-sqlite3가 동기라 배치가 끝난 뒤 순차로.
+  const targets: string[] = []
   for (const f of readdirSync(dir)) {
-    if (added >= limit) break
+    if (targets.length >= limit) break
     const ext = extname(f).toLowerCase()
     if (!EXTERNAL_IMAGE_EXTS.has(ext)) continue
     const filePath = join(dir, f)
     if (known.has(filePath)) continue
     try {
       if (!statSync(filePath).isFile()) continue
-      const thumbnail = await sharp(filePath)
-        .resize(640, 640, { fit: 'inside' })
-        .webp({ quality: 90 })
-        .toBuffer()
-      insert.run(filePath, thumbnail, sceneId)
-      added++
-      lastFilePath = filePath
     } catch {
-      // 손상/미지원 파일은 건너뜀
+      continue // 스캔 도중 사라진 파일 등
+    }
+    targets.push(filePath)
+  }
+
+  let added = 0
+  let lastFilePath: string | null = null
+  for (let i = 0; i < targets.length; i += THUMB_CONCURRENCY) {
+    const batch = targets.slice(i, i + THUMB_CONCURRENCY)
+    const thumbs = await Promise.all(
+      batch.map((filePath) =>
+        sharp(filePath)
+          .resize(640, 640, { fit: 'inside' })
+          .webp({ quality: 90 })
+          .toBuffer()
+          .catch(() => null) // 손상/미지원 파일은 건너뜀
+      )
+    )
+    for (let j = 0; j < batch.length; j++) {
+      const thumbnail = thumbs[j]
+      if (!thumbnail) continue
+      insert.run(batch[j], thumbnail, sceneId)
+      added++
+      lastFilePath = batch[j]
     }
   }
   return { added, lastFilePath }
@@ -710,21 +732,28 @@ export function bulkClearFavorites(ids: number[]): void {
     .run(...ids)
 }
 
+/**
+ * 파일 여러 개 삭제 — 동시 개수를 제한한 비동기 삭제.
+ * unlinkSync 루프는 삭제 수에 그대로 비례해 메인 프로세스를 세운다 (수백 장이면 체감 정지).
+ * 이미 없는 파일은 무시한다 (best-effort).
+ */
+const UNLINK_CONCURRENCY = 16
+
+async function unlinkAll(paths: string[]): Promise<void> {
+  for (let i = 0; i < paths.length; i += UNLINK_CONCURRENCY) {
+    await Promise.all(paths.slice(i, i + UNLINK_CONCURRENCY).map((p) => unlink(p).catch(() => {})))
+  }
+}
+
 /** 선택 씬들의 생성 이미지를 전부 삭제 (DB 행 + 파일). 대량이라 파일은 best-effort */
-export function bulkClearImages(ids: number[]): number {
+export async function bulkClearImages(ids: number[]): Promise<number> {
   if (ids.length === 0) return 0
   const db = getDb()
   const rows = db
     .prepare(`SELECT file_path FROM images WHERE scene_id IN (${placeholders(ids.length)})`)
     .all(...ids) as { file_path: string }[]
   db.prepare(`DELETE FROM images WHERE scene_id IN (${placeholders(ids.length)})`).run(...ids)
-  for (const r of rows) {
-    try {
-      unlinkSync(r.file_path)
-    } catch {
-      // 파일이 이미 없으면 무시
-    }
-  }
+  await unlinkAll(rows.map((r) => r.file_path))
   return rows.length
 }
 
@@ -742,15 +771,17 @@ export function sceneImages(
       c: number
     }
   ).c
+  // thumbnail BLOB은 읽지 않는다 — 씬 상세 그리드는 원본을 nais-image://…?path=로
+  // 지연 로드하므로 썸네일을 쓰지 않는데, 예전엔 한 페이지(80장) 분량을 base64로 만들어
+  // IPC로 넘겼다: 80 × 평균 46KB × 1.33 ≈ 2.1MB를 매 페이지·매 재로드마다 낭비 (N9와 같은 실수)
   const rows = db
     .prepare(
-      `SELECT id, file_path, thumbnail, seed, favorite FROM images
+      `SELECT id, file_path, seed, favorite FROM images
        WHERE scene_id = ?${fav} ORDER BY id DESC LIMIT ? OFFSET ?`
     )
     .all(sceneId, limit, offset) as {
     id: number
     file_path: string
-    thumbnail: Buffer | null
     seed: number | null
     favorite: number
   }[]
@@ -759,7 +790,6 @@ export function sceneImages(
     items: rows.map((r) => ({
       id: r.id,
       filePath: r.file_path,
-      thumbnail: r.thumbnail ? r.thumbnail.toString('base64') : '',
       seed: r.seed,
       favorite: r.favorite === 1
     }))
@@ -767,19 +797,15 @@ export function sceneImages(
 }
 
 /** 씬의 즐겨찾기 제외 전체 삭제 (파일 포함) — 반환: 삭제 수 (N5) */
-export function deleteNonFavorites(sceneId: number): number {
+export async function deleteNonFavorites(sceneId: number): Promise<number> {
   const db = getDb()
   const rows = db
     .prepare('SELECT id, file_path FROM images WHERE scene_id = ? AND favorite = 0')
     .all(sceneId) as { id: number; file_path: string }[]
   db.prepare('DELETE FROM images WHERE scene_id = ? AND favorite = 0').run(sceneId)
-  for (const r of rows) {
-    try {
-      unlinkSync(r.file_path)
-    } catch {
-      // 무시
-    }
-  }
+  // DB 행을 먼저 지우고 파일 삭제를 await 한다 — 삭제가 끝나기 전에 응답하면 열린 씬의
+  // 폴더 감시(watchScene)가 "DB에 없는데 디스크엔 있는 파일"로 보고 도로 등록해버린다.
+  await unlinkAll(rows.map((r) => r.file_path))
   return rows.length
 }
 
@@ -789,11 +815,14 @@ export function setImageFavorite(id: number, favorite: boolean): void {
     .run(favorite ? 1 : 0, id)
 }
 
-/** 히스토리 전체 비우기 — 모든 이미지 레코드+원본 파일 삭제 (씬 이미지 포함) */
-/** 앱 내부 라이브러리(자동 저장 OFF 보관소) 파일만 실제 삭제 — 유저 저장 폴더 파일은 보존 */
-function unlinkIfInternal(filePath: string): void {
+/** 앱 내부 라이브러리(자동 저장 OFF 보관소) 파일인지 — 유저 저장 폴더 파일은 보존 대상 */
+function isInternalFile(filePath: string): boolean {
   const rel = relative(libraryRoot(), filePath)
-  if (rel.startsWith('..') || isAbsolute(rel)) return // 저장 폴더 파일 → 보존
+  return !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+function unlinkIfInternal(filePath: string): void {
+  if (!isInternalFile(filePath)) return
   try {
     unlinkSync(filePath)
   } catch {
@@ -802,11 +831,11 @@ function unlinkIfInternal(filePath: string): void {
 }
 
 /** 히스토리 전체 비우기 — 기록만 삭제, 파일 보존 (내부 라이브러리 파일은 정리) */
-export function clearAllImages(): number {
+export async function clearAllImages(): Promise<number> {
   const db = getDb()
   const rows = db.prepare('SELECT file_path FROM images').all() as { file_path: string }[]
   db.prepare('DELETE FROM images').run()
-  for (const r of rows) unlinkIfInternal(r.file_path)
+  await unlinkAll(rows.map((r) => r.file_path).filter(isInternalFile))
   return rows.length
 }
 

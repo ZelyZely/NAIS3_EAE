@@ -351,11 +351,13 @@ export interface Scene {
   hasFavorite: boolean
 }
 
-/** 씬 상세의 생성 이미지 (페이지네이션 단위) */
+/**
+ * 씬 상세의 생성 이미지 (페이지네이션 단위).
+ * 썸네일 필드는 없다 — 그리드는 원본을 nais-image 프로토콜로 지연 로드한다.
+ */
 export interface SceneImage {
   id: number
   filePath: string
-  thumbnail: string
   seed: number | null
   favorite: boolean
 }
@@ -365,8 +367,6 @@ export interface LibraryImage {
   id: number
   name: string
   filePath: string
-  /** webp 썸네일 base64 (없으면 '') */
-  thumbnail: string
   width: number | null
   height: number | null
   stackId: number | null
@@ -377,8 +377,6 @@ export interface LibraryStack {
   id: number
   name: string
   count: number
-  /** 스택 대표(최신) 이미지 썸네일 base64 (없으면 '') */
-  coverThumbnail: string
 }
 
 /** IPC invoke 채널 계약: 채널명 → (요청, 응답) */

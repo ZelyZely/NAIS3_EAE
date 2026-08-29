@@ -23,7 +23,6 @@ interface ImageRow {
   id: number
   name: string
   file_path: string
-  thumbnail: Buffer | null
   width: number | null
   height: number | null
   stack_id: number | null
@@ -34,11 +33,26 @@ function toImage(r: ImageRow): LibraryImage {
     id: r.id,
     name: r.name,
     filePath: r.file_path,
-    thumbnail: r.thumbnail ? r.thumbnail.toString('base64') : '',
     width: r.width,
     height: r.height,
     stackId: r.stack_id
   }
+}
+
+/** 카드 썸네일 1건 — nais-image://local/?libImage=<id>가 그려질 때 조회 (목록 조회에선 읽지 않음) */
+export function libraryThumbnail(imageId: number): Buffer | null {
+  const row = getDb().prepare('SELECT thumbnail FROM library_images WHERE id = ?').get(imageId) as
+    | { thumbnail: Buffer | null }
+    | undefined
+  return row?.thumbnail ?? null
+}
+
+/** 스택 대표(최신) 썸네일 1건 — nais-image://local/?libStack=<id> */
+export function libraryStackCover(stackId: number): Buffer | null {
+  const row = getDb()
+    .prepare('SELECT thumbnail FROM library_images WHERE stack_id = ? ORDER BY id DESC LIMIT 1')
+    .get(stackId) as { thumbnail: Buffer | null } | undefined
+  return row?.thumbnail ?? null
 }
 
 /** stackId 미지정/null = 루트(스택 목록 + 미분류 이미지), 지정 = 해당 스택 내부 */
@@ -52,9 +66,11 @@ export function listLibrary(
   const where = inStack ? 'stack_id = ?' : 'stack_id IS NULL'
   const params = inStack ? [stackId] : []
 
+  // 썸네일 BLOB은 읽지 않는다 — 카드가 그려질 때 nais-image 프로토콜로 개별 지연 로드.
+  // 예전엔 한 페이지(80장)를 base64로 만들어 IPC로 넘겼다 (≈4MB/페이지, 씬 목록 N9와 같은 실수)
   const rows = db
     .prepare(
-      `SELECT id, name, file_path, thumbnail, width, height, stack_id
+      `SELECT id, name, file_path, width, height, stack_id
        FROM library_images WHERE ${where} ORDER BY sort_order DESC, id DESC LIMIT ? OFFSET ?`
     )
     .all(...params, limit, offset) as ImageRow[]
@@ -68,17 +84,11 @@ export function listLibrary(
         db
           .prepare(
             `SELECT s.id, s.name,
-               (SELECT COUNT(*) FROM library_images i WHERE i.stack_id = s.id) AS count,
-               (SELECT thumbnail FROM library_images i WHERE i.stack_id = s.id ORDER BY i.id DESC LIMIT 1) AS cover
+               (SELECT COUNT(*) FROM library_images i WHERE i.stack_id = s.id) AS count
              FROM library_stacks s ORDER BY s.id DESC`
           )
-          .all() as { id: number; name: string; count: number; cover: Buffer | null }[]
-      ).map((s) => ({
-        id: s.id,
-        name: s.name,
-        count: s.count,
-        coverThumbnail: s.cover ? s.cover.toString('base64') : ''
-      }))
+          .all() as { id: number; name: string; count: number }[]
+      ).map((s) => ({ id: s.id, name: s.name, count: s.count }))
 
   return { items: rows.map(toImage), stacks, total }
 }

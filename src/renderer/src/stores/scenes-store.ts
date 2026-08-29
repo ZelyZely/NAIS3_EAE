@@ -67,6 +67,8 @@ interface ScenesState {
   load: () => Promise<void>
   /** 지정한 씬들만 경량 재조회해 목록에 패치 — 즐겨찾기 토글/생성 완료처럼 일부만 바뀌었을 때 전체 reload(썸네일 전부 재조회) 대신 사용 */
   refreshScenes: (ids: number[]) => Promise<void>
+  /** 새로 만든 씬 1개만 목록 끝에 붙임 — 생성/복제 후 프리셋 전체 reload 대신 */
+  appendScene: (id: number) => Promise<void>
   select: (id: number | null) => void
   setEditMode: (v: boolean) => void
   setColumns: (n: number) => void
@@ -324,6 +326,16 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const byId = new Map(items.map((s) => [s.id, s]))
     set({ scenes: get().scenes.map((s) => byId.get(s.id) ?? s) })
   },
+  appendScene: async (id) => {
+    const presetId = get().activePresetId
+    const { items } = await window.nais.invoke('scenes:summaries', { ids: [id] })
+    const scene = items[0]
+    // 프리셋을 갈아탄 뒤 응답이 오면 남의 목록에 끼워넣는 꼴 — 폐기
+    if (!scene || get().activePresetId !== presetId || scene.presetId !== presetId) return
+    if (get().scenes.some((s) => s.id === id)) return
+    // 새 씬은 sort_order = MAX+1 (repo.createScene/duplicateScene) — 목록 정렬과 같게 맨 뒤
+    set({ scenes: [...get().scenes, scene] })
+  },
   select: (selectedId) => {
     if (selectedId !== get().selectedId) recordNav() // 마우스 뒤로/앞으로용 히스토리
     set({ selectedId, images: [], imagesTotal: 0, favoritesOnly: false })
@@ -366,8 +378,11 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
   clearSelection: () => set({ selection: new Set() }),
 
   create: async (name) => {
-    await window.nais.invoke('scenes:create', { presetId: get().activePresetId, name })
-    await get().load()
+    const { id } = await window.nais.invoke('scenes:create', {
+      presetId: get().activePresetId,
+      name
+    })
+    await get().appendScene(id)
   },
   update: async (id, patch) => {
     set({ scenes: get().scenes.map((s) => (s.id === id ? { ...s, ...patch } : s)) })
@@ -384,13 +399,17 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     })
   },
   duplicate: async (id) => {
-    await window.nais.invoke('scenes:duplicate', { id })
-    await get().load()
+    const { id: newId } = await window.nais.invoke('scenes:duplicate', { id })
+    if (newId > 0) await get().appendScene(newId)
   },
   remove: async (id) => {
     await window.nais.invoke('scenes:delete', { id })
-    if (get().selectedId === id) set({ selectedId: null })
-    await get().load()
+    // 지운 씬만 목록에서 빼면 된다 — 프리셋 전체 재조회는 남은 카드 전부를 새 객체로
+    // 갈아치워 불필요한 리렌더를 만든다 (씬 수백 개면 체감)
+    set({
+      scenes: get().scenes.filter((s) => s.id !== id),
+      ...(get().selectedId === id ? { selectedId: null } : {})
+    })
   },
   reorder: async (ids) => {
     set({ scenes: ids.map((id) => get().scenes.find((s) => s.id === id)!).filter(Boolean) })
@@ -465,26 +484,34 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const ids = [...get().selection]
     await window.nais.invoke('scenes:bulkMove', { ids, presetId })
     set({ selection: new Set() })
-    await get().load()
+    // 같은 프리셋으로 옮기면 목록은 그대로 — 다른 프리셋이면 옮겨간 씬만 빠진다
+    if (presetId === get().activePresetId) return
+    const gone = new Set(ids)
+    set({ scenes: get().scenes.filter((s) => !gone.has(s.id)) })
+    if (get().selectedId != null && gone.has(get().selectedId!)) set({ selectedId: null })
   },
   bulkDelete: async () => {
     const ids = [...get().selection]
     await window.nais.invoke('scenes:bulkDelete', { ids })
-    set({ selection: new Set() })
-    await get().load()
+    const gone = new Set(ids)
+    set({ selection: new Set(), scenes: get().scenes.filter((s) => !gone.has(s.id)) })
+    if (get().selectedId != null && gone.has(get().selectedId!)) set({ selectedId: null })
   },
   bulkSetResolution: async (width, height) => {
     const ids = [...get().selection]
     await window.nais.invoke('scenes:bulkSetResolution', { ids, width, height })
-    await get().load()
+    await get().refreshScenes(ids)
   },
   bulkClearFavorites: async () => {
-    await window.nais.invoke('scenes:bulkClearFavorites', { ids: [...get().selection] })
+    const ids = [...get().selection]
+    await window.nais.invoke('scenes:bulkClearFavorites', { ids })
+    await get().refreshScenes(ids)
   },
   bulkClearImages: async () => {
-    await window.nais.invoke('scenes:bulkClearImages', { ids: [...get().selection] })
+    const ids = [...get().selection]
+    await window.nais.invoke('scenes:bulkClearImages', { ids })
     set({ selection: new Set() })
-    await get().load()
+    await get().refreshScenes(ids)
   },
   bulkExportZip: async () => {
     await window.nais.invoke('scenes:bulkExportZip', { ids: [...get().selection] })
@@ -554,7 +581,8 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const { deleted } = await window.nais.invoke('scenes:deleteNonFavorites', { sceneId })
     if (deleted > 0) {
       await get().loadImages(sceneId, true)
-      void get().load() // 카드 썸네일/카운트 갱신
+      // 바뀐 건 이 씬 하나 — 프리셋 전체 load()는 불필요 (N7)
+      void get().refreshScenes([sceneId])
       void useGenerationStore.getState().refreshHistory()
     }
     return deleted
@@ -565,7 +593,7 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     toast(added > 0 ? `외부 이미지 ${added}장 반영함` : '새로 반영할 파일 없음', 'info')
     if (added > 0) {
       await get().loadImages(sceneId, true)
-      void get().load()
+      void get().refreshScenes([sceneId])
     }
   },
   syncActivePreset: async () => {
