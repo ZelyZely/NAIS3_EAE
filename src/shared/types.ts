@@ -586,6 +586,8 @@ export interface IpcInvokeMap {
   'scenes:list': { req: { presetId: number }; res: { items: Scene[] } }
   'scenes:summaries': { req: { ids: number[] }; res: { items: Scene[] } }
   'scenes:create': { req: { presetId: number; name: string }; res: { id: number } }
+  /** 지정한 씬 바로 뒤에 빈 씬 생성 — 우클릭 "옆에 새 씬 생성" */
+  'scenes:createAfter': { req: { afterId: number; name: string }; res: { id: number } }
   'scenes:get': { req: { id: number }; res: { scene: Scene | null } }
   'scenes:update': {
     req: {

@@ -83,6 +83,7 @@ import {
   listScenes,
   sceneSummaries,
   createScene,
+  createSceneAfter,
   getScene,
   getPresetPath,
   updateScene,
@@ -392,6 +393,7 @@ export function registerIpcHandlers(ctx: { dbVersion: number; queue: GenerationQ
   handle('scenes:list', ({ presetId }) => ({ items: listScenes(presetId) }))
   handle('scenes:summaries', ({ ids }) => ({ items: sceneSummaries(ids) }))
   handle('scenes:create', ({ presetId, name }) => ({ id: createScene(presetId, name) }))
+  handle('scenes:createAfter', ({ afterId, name }) => ({ id: createSceneAfter(afterId, name) }))
   handle('scenes:get', ({ id }) => ({ scene: getScene(id) }))
   handle('scenes:update', ({ id, patch }) => {
     updateScene(id, patch)

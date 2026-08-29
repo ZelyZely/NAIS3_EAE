@@ -19,6 +19,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
   Square,
+  SquarePlus,
   Trash2,
   UsersRound
 } from 'lucide-react'
@@ -770,6 +771,7 @@ const SceneCard = memo(function SceneCard({
   const select = useScenesStore((s) => s.select)
   const update = useScenesStore((s) => s.update)
   const duplicate = useScenesStore((s) => s.duplicate)
+  const createNextTo = useScenesStore((s) => s.createNextTo)
   const remove = useScenesStore((s) => s.remove)
   const adjustReserve = useScenesStore((s) => s.adjustReserve)
   const setReserve = useScenesStore((s) => s.setReserve)
@@ -995,6 +997,9 @@ const SceneCard = memo(function SceneCard({
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => void duplicate(scene.id)}>
           <Copy size={13} /> 복제
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void createNextTo(scene.id, '새 씬')}>
+          <SquarePlus size={13} /> 옆에 새 씬 생성
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => void openFolder()}>
           <FolderOpen size={13} className="text-amber-400" /> 폴더 열기

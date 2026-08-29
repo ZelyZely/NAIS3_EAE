@@ -67,8 +67,10 @@ interface ScenesState {
   load: () => Promise<void>
   /** 지정한 씬들만 경량 재조회해 목록에 패치 — 즐겨찾기 토글/생성 완료처럼 일부만 바뀌었을 때 전체 reload(썸네일 전부 재조회) 대신 사용 */
   refreshScenes: (ids: number[]) => Promise<void>
-  /** 새로 만든 씬 1개만 목록 끝에 붙임 — 생성/복제 후 프리셋 전체 reload 대신 */
+  /** 새로 만든 씬 1개만 목록 끝에 붙임 — 생성 후 프리셋 전체 reload 대신 */
   appendScene: (id: number) => Promise<void>
+  /** 새로 만든 씬 1개를 afterId 바로 뒤에 끼워넣음 (null이면 맨 뒤) — 복제/옆에 추가용 */
+  insertScene: (id: number, afterId: number | null) => Promise<void>
   select: (id: number | null) => void
   setEditMode: (v: boolean) => void
   setColumns: (n: number) => void
@@ -82,6 +84,8 @@ interface ScenesState {
   create: (name: string) => Promise<void>
   update: (id: number, patch: Partial<Scene>) => Promise<void>
   duplicate: (id: number) => Promise<void>
+  /** 지정한 씬 바로 뒤에 빈 씬 생성 — 우클릭 "옆에 새 씬 생성" */
+  createNextTo: (id: number, name: string) => Promise<void>
   remove: (id: number) => Promise<void>
   reorder: (ids: number[]) => Promise<void>
   /** 프리셋의 새 씬 기본 해상도 설정 (N3) */
@@ -327,14 +331,21 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     set({ scenes: get().scenes.map((s) => byId.get(s.id) ?? s) })
   },
   appendScene: async (id) => {
+    await get().insertScene(id, null)
+  },
+  insertScene: async (id, afterId) => {
     const presetId = get().activePresetId
     const { items } = await window.nais.invoke('scenes:summaries', { ids: [id] })
     const scene = items[0]
     // 프리셋을 갈아탄 뒤 응답이 오면 남의 목록에 끼워넣는 꼴 — 폐기
     if (!scene || get().activePresetId !== presetId || scene.presetId !== presetId) return
     if (get().scenes.some((s) => s.id === id)) return
-    // 새 씬은 sort_order = MAX+1 (repo.createScene/duplicateScene) — 목록 정렬과 같게 맨 뒤
-    set({ scenes: [...get().scenes, scene] })
+    const scenes = get().scenes
+    // afterId 바로 뒤에 끼워넣기 — 못 찾으면(이미 삭제됨 등) 서버 정렬과 같은 맨 뒤로
+    const idx = afterId == null ? -1 : scenes.findIndex((s) => s.id === afterId)
+    set({
+      scenes: idx === -1 ? [...scenes, scene] : [...scenes.slice(0, idx + 1), scene, ...scenes.slice(idx + 1)]
+    })
   },
   select: (selectedId) => {
     if (selectedId !== get().selectedId) recordNav() // 마우스 뒤로/앞으로용 히스토리
@@ -399,8 +410,13 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     })
   },
   duplicate: async (id) => {
+    // 서버도 원본 바로 뒤에 넣는다 (repo.duplicateScene) — 목록에서도 같은 자리에 보여야 함
     const { id: newId } = await window.nais.invoke('scenes:duplicate', { id })
-    if (newId > 0) await get().appendScene(newId)
+    if (newId > 0) await get().insertScene(newId, id)
+  },
+  createNextTo: async (id, name) => {
+    const { id: newId } = await window.nais.invoke('scenes:createAfter', { afterId: id, name })
+    if (newId > 0) await get().insertScene(newId, id)
   },
   remove: async (id) => {
     await window.nais.invoke('scenes:delete', { id })

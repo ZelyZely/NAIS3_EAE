@@ -591,22 +591,65 @@ export function createScene(presetId: number, name: string): number {
   )
 }
 
+/**
+ * afterSortOrder보다 큰 씬을 전부 1칸씩 뒤로 밀어 그 바로 뒤에 끼워 넣을 자리를 만든다.
+ * sort_order가 연속값이 아니어도(과거 append로 생긴 큰 간격 등) 상대 순서만 지키면
+ * 되므로 문제없다 — 밀린 뒤의 최솟값보다 항상 작은 afterSortOrder+1로 삽입하면 된다.
+ */
+function makeRoomAfter(db: ReturnType<typeof getDb>, presetId: number, afterSortOrder: number): void {
+  db.prepare('UPDATE gen_scenes SET sort_order = sort_order + 1 WHERE preset_id = ? AND sort_order > ?')
+    .run(presetId, afterSortOrder)
+}
+
+/** 지정한 씬 바로 뒤에 빈 씬 생성 — 우클릭 "옆에 새 씬 생성" */
+export function createSceneAfter(afterId: number, name: string): number {
+  const db = getDb()
+  const after = db.prepare('SELECT preset_id, sort_order FROM gen_scenes WHERE id = ?').get(afterId) as
+    | { preset_id: number; sort_order: number }
+    | undefined
+  if (!after) return 0
+  const preset = db
+    .prepare('SELECT default_width AS w, default_height AS h FROM scene_presets WHERE id = ?')
+    .get(after.preset_id) as { w: number | null; h: number | null } | undefined
+  return db.transaction(() => {
+    makeRoomAfter(db, after.preset_id, after.sort_order)
+    return Number(
+      db
+        .prepare(
+          'INSERT INTO gen_scenes (preset_id, name, width, height, sort_order) VALUES (?, ?, ?, ?, ?)'
+        )
+        .run(after.preset_id, name, preset?.w ?? 832, preset?.h ?? 1216, after.sort_order + 1)
+        .lastInsertRowid
+    )
+  })()
+}
+
+/** 원본 씬 바로 뒤에 복제본 생성 — 목록 끝이 아니라 원본 옆에서 바로 보이도록 */
 export function duplicateScene(id: number): number {
   const db = getDb()
-  const s = db.prepare('SELECT * FROM gen_scenes WHERE id = ?').get(id) as Row | undefined
+  const s = db.prepare('SELECT * FROM gen_scenes WHERE id = ?').get(id) as
+    | (Row & { sort_order: number })
+    | undefined
   if (!s) return 0
-  const max = db
-    .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM gen_scenes WHERE preset_id = ?')
-    .get(s.preset_id) as { m: number }
-  return Number(
-    db
-      .prepare(
-        `INSERT INTO gen_scenes (preset_id, name, prompt, negative_prompt, width, height, sort_order, reserve_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
-      )
-      .run(s.preset_id, `${s.name} 복제`, s.prompt, s.negative_prompt, s.width, s.height, max.m + 1)
-      .lastInsertRowid
-  )
+  return db.transaction(() => {
+    makeRoomAfter(db, s.preset_id, s.sort_order)
+    return Number(
+      db
+        .prepare(
+          `INSERT INTO gen_scenes (preset_id, name, prompt, negative_prompt, width, height, sort_order, reserve_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
+        )
+        .run(
+          s.preset_id,
+          `${s.name} 복제`,
+          s.prompt,
+          s.negative_prompt,
+          s.width,
+          s.height,
+          s.sort_order + 1
+        ).lastInsertRowid
+    )
+  })()
 }
 
 const FIELDS: Record<string, string> = {
