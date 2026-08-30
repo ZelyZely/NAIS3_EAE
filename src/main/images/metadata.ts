@@ -57,51 +57,83 @@ export function parsePngTextChunks(buf: Buffer): Record<string, string> {
 }
 
 /**
- * WEBP 손실 압축본용 메타데이터 이전 — PNG tEXt 딕셔너리를 base64 JSON으로 묶어
- * EXIF IFD0.ImageDescription에 싣는다 (WEBP는 tEXt 청크가 없어 EXIF가 유일한 텍스트 컨테이너).
+ * WEBP 손실 압축본용 메타데이터 이전 — 원본 텍스트 딕셔너리를 base64 JSON으로 묶어
+ * EXIF IFD0.Artist에 싣는다 (WEBP는 tEXt 청크가 없어 EXIF가 유일한 텍스트 컨테이너).
  */
 export function encodeTextDictForExif(text: Record<string, string>): string {
   return Buffer.from(JSON.stringify(text), 'utf8').toString('base64')
 }
 
-function decodeTextDictFromExif(b64: string): Record<string, string> {
-  return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as Record<string, string>
+/** base64 JSON 딕셔너리 복원 — 문자열만 담긴 평평한 객체가 아니면 우리 것이 아니다 */
+function decodeTextDictFromExif(b64: string): Record<string, string> | null {
+  try {
+    const o = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as unknown
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+    const entries = Object.entries(o as Record<string, unknown>)
+    if (entries.length === 0 || entries.some(([, v]) => typeof v !== 'string')) return null
+    return Object.fromEntries(entries) as Record<string, string>
+  } catch {
+    return null
+  }
 }
 
+/** 우리가 읽는 EXIF 텍스트 태그 (IFD0 + ExifIFD) */
+const EXIF_TEXT_TAGS: Record<number, string> = {
+  0x010e: 'ImageDescription',
+  0x0110: 'Model',
+  0x0131: 'Software',
+  0x013b: 'Artist',
+  0x8298: 'Copyright',
+  0x9286: 'UserComment'
+}
+const EXIF_SUB_IFD_TAG = 0x8769
+
 /**
- * TIFF(EXIF) IFD0에서 ImageDescription(tag 0x010e, ASCII) 값만 읽는 최소 파서.
+ * TIFF(EXIF)에서 텍스트 태그만 뽑는 최소 파서 (IFD0 + ExifIFD).
  * sharp가 돌려주는 exif 버퍼는 JPEG APP1 관례대로 "Exif\0\0" 6바이트 프리픽스가 붙어 있고,
  * TIFF 내부 오프셋들은 모두 이 프리픽스 뒤(TIFF 헤더 시작)를 기준으로 한다.
  */
-function readExifImageDescription(buf: Buffer): string | undefined {
+function readExifTextTags(buf: Buffer): Record<string, string> {
+  const out: Record<string, string> = {}
   const base =
     buf.length >= 6 && buf.toString('ascii', 0, 4) === 'Exif' && buf[4] === 0 && buf[5] === 0
       ? 6
       : 0
-  if (buf.length < base + 8) return undefined
+  if (buf.length < base + 8) return out
   const byteOrder = buf.toString('ascii', base, base + 2)
   const le = byteOrder === 'II'
-  if (!le && byteOrder !== 'MM') return undefined
+  if (!le && byteOrder !== 'MM') return out
   const u16 = (o: number): number => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o))
   const u32 = (o: number): number => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o))
-  const ifdOffset = base + u32(base + 4)
-  if (ifdOffset + 2 > buf.length) return undefined
-  const count = u16(ifdOffset)
-  for (let i = 0; i < count; i++) {
-    const entryOff = ifdOffset + 2 + i * 12
-    if (entryOff + 12 > buf.length) break
-    const tag = u16(entryOff)
-    const type = u16(entryOff + 2)
-    if (tag === 0x010e && type === 2) {
+
+  const walk = (ifdOffset: number, depth: number): void => {
+    if (depth > 1 || ifdOffset + 2 > buf.length) return
+    const count = u16(ifdOffset)
+    for (let i = 0; i < count; i++) {
+      const entryOff = ifdOffset + 2 + i * 12
+      if (entryOff + 12 > buf.length) break
+      const tag = u16(entryOff)
+      const type = u16(entryOff + 2)
       const len = u32(entryOff + 4)
+      if (tag === EXIF_SUB_IFD_TAG && type === 4) {
+        walk(base + u32(entryOff + 8), depth + 1)
+        continue
+      }
+      const name = EXIF_TEXT_TAGS[tag]
+      // 2 = ASCII, 7 = UNDEFINED(UserComment). 그 외 타입은 텍스트가 아니다.
+      if (!name || (type !== 2 && type !== 7)) continue
       const dataOff = len <= 4 ? entryOff + 8 : base + u32(entryOff + 8)
-      if (dataOff + len > buf.length) return undefined
-      const raw = buf.subarray(dataOff, dataOff + len)
+      if (dataOff + len > buf.length) continue
+      let raw = buf.subarray(dataOff, dataOff + len)
+      // UserComment는 앞 8바이트가 문자코드 지시자("ASCII\0\0\0" 등)
+      if (type === 7 && raw.length > 8) raw = raw.subarray(8)
       const nul = raw.indexOf(0)
-      return raw.toString('utf8', 0, nul >= 0 ? nul : raw.length)
+      const value = raw.toString('utf8', 0, nul >= 0 ? nul : raw.length).trim()
+      if (value) out[name] = value
     }
   }
-  return undefined
+  walk(base + u32(base + 4), 0)
+  return out
 }
 
 /** stealth 메타데이터 (알파 채널 LSB, column-major, magic + gzip JSON) */
@@ -252,22 +284,46 @@ export function metadataFromPayloadJson(json: string): ImageMetadata | null {
   }
 }
 
-/** WEBP(EXIF ImageDescription) → PNG tEXt와 동일한 keyword→text 딕셔너리로 복원 */
+/**
+ * WEBP(EXIF) → PNG tEXt와 동일한 keyword→text 딕셔너리로 복원.
+ *
+ * 두 가지 출처를 모두 본다:
+ * 1. NAI가 직접 만든 WEBP — 표준 EXIF 태그(ImageDescription/Software/Model/UserComment).
+ *    외부 메타데이터 뷰어가 읽는 것과 같은 자리다.
+ * 2. NAIS3 손실 압축본 — 원본 tEXt 전체를 base64 JSON으로 묶어 실은 딕셔너리.
+ *    현재 슬롯은 Artist, v1.0.22 이전 저장본은 ImageDescription. 원본에 더 가까우므로
+ *    표준 태그에서 뽑은 값 위에 덮어쓴다.
+ */
 async function textDictFromWebp(buf: Buffer): Promise<Record<string, string>> {
   try {
     const { exif } = await sharp(buf).metadata()
     if (!exif) return {}
-    const b64 = readExifImageDescription(exif)
-    return b64 ? decodeTextDictFromExif(b64) : {}
+    const tags = readExifTextTags(exif)
+    const out: Record<string, string> = {}
+    if (tags.ImageDescription) out.Description = tags.ImageDescription
+    if (tags.Software) out.Software = tags.Software
+    if (tags.Model) out.Source = tags.Model
+    if (tags.UserComment) out.Comment = tags.UserComment
+    for (const slot of [tags.Artist, tags.Copyright, tags.ImageDescription]) {
+      const dict = slot ? decodeTextDictFromExif(slot) : null
+      if (dict) return { ...out, ...dict }
+    }
+    return out
   } catch {
     return {}
   }
 }
 
+/** PNG면 tEXt, 아니면 EXIF에서 keyword→text 딕셔너리를 뽑는다 (읽기·재압축 공용) */
+export async function textDictFromImage(buf: Buffer): Promise<Record<string, string>> {
+  const isPng = buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIG)
+  return isPng ? parsePngTextChunks(buf) : textDictFromWebp(buf)
+}
+
 /** PNG/WEBP 버퍼 → 정규화 메타 (tEXt/EXIF Comment → stealth 폴백[PNG 한정]). 없으면 null */
 export async function metadataFromImage(buf: Buffer): Promise<ImageMetadata | null> {
   const isPng = buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIG)
-  const text = isPng ? parsePngTextChunks(buf) : await textDictFromWebp(buf)
+  const text = await textDictFromImage(buf)
   const local = parseLocalParams(text)
   let comment: Params | null = null
   let extra = {

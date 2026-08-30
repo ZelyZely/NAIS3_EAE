@@ -6,7 +6,7 @@ import sharp from 'sharp'
 import type { DirectorMethod, ImageMetadata } from '../../shared/types'
 import { getDb } from '../db'
 import { getSetting } from '../db/settings'
-import { encodeTextDictForExif, parsePngTextChunks } from './metadata'
+import { encodeTextDictForExif, textDictFromImage } from './metadata'
 
 /**
  * 생성 이미지 저장 규칙 (P3의 핵심):
@@ -123,25 +123,48 @@ function webpQuality(): number {
   return Number.isFinite(n) && n >= 1 && n <= 100 ? Math.round(n) : WEBP_QUALITY_DEFAULT
 }
 
+/** 손실 WEBP 재압축본에 생성 정보를 남길지 (기본 켬) */
+function webpKeepMetadata(): boolean {
+  return getSetting('webp_keep_metadata') !== '0'
+}
+
 /**
- * 원본 PNG → 손실 WEBP 재압축.
- * 원본 tEXt(NAI 생성 파라미터) + NAIS3 로컬 메타데이터(promptParts)는 잃지 않고
- * EXIF IFD0.ImageDescription(base64 JSON)으로 옮겨 싣는다 — WEBP는 tEXt 청크가 없어서.
+ * 원본(PNG 또는 NAI가 WEBP로 준 것) → 손실 WEBP 재압축.
+ *
+ * 보존이 켜져 있으면 세 겹으로 남긴다:
+ * 1. keepMetadata() — 원본 EXIF를 통째로 들고 간다. NAI가 WEBP를 준 경우 우리가 모르는
+ *    태그까지 그대로 남아 외부 메타데이터 뷰어가 계속 읽는다.
+ * 2. ImageDescription/Software/Model — 사람이 읽는 프롬프트·모델. PNG 원본이었을 때도
+ *    외부 뷰어에서 정상으로 보이게 하는 자리다.
+ * 3. Artist — 원본 텍스트 전체(+NAIS3 promptParts)를 base64 JSON으로 묶은 왕복용 딕셔너리.
+ *    ImageDescription을 안 쓰는 이유가 2번이다. 예전 저장본은 여기 대신 ImageDescription에
+ *    들어 있고, 읽는 쪽(textDictFromImage)이 둘 다 본다.
+ *
+ * 예전엔 원본을 무조건 PNG로 보고 tEXt만 읽었다. image_format=webp 설정이면 딕셔너리가
+ * 항상 비어 EXIF에 base64("{}")를 써 넣고 원본 메타데이터를 통째로 날렸다.
  */
 async function compressToLossyWebp(
-  png: Buffer,
+  src: Buffer,
   localMetadata?: Pick<ImageMetadata, 'promptParts'>
 ): Promise<Buffer> {
-  const text = parsePngTextChunks(png)
+  const quality = webpQuality()
+  if (!webpKeepMetadata()) return sharp(src).webp({ quality }).toBuffer()
+
+  const text = await textDictFromImage(src)
   if (localMetadata) {
     text['nais3-params'] = Buffer.from(
       JSON.stringify({ version: 1, ...localMetadata }),
       'utf8'
     ).toString('base64')
   }
-  return sharp(png)
-    .webp({ quality: webpQuality() })
-    .withExif({ IFD0: { ImageDescription: encodeTextDictForExif(text) } })
+  const std: Record<string, string> = { Artist: encodeTextDictForExif(text) }
+  if (text.Description) std.ImageDescription = text.Description
+  if (text.Software) std.Software = text.Software
+  if (text.Source) std.Model = text.Source
+  return sharp(src)
+    .keepMetadata()
+    .webp({ quality })
+    .withExifMerge({ IFD0: std })
     .toBuffer()
 }
 

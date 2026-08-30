@@ -314,6 +314,7 @@ function StorageSection(): React.JSX.Element {
   const [historyDeleteFile, setHistoryDeleteFile] = useState(false)
   const [webpLossy, setWebpLossy] = useState(false)
   const [webpQuality, setWebpQuality] = useState(80)
+  const [webpKeepMeta, setWebpKeepMeta] = useState(true)
 
   useEffect(() => {
     void window.nais
@@ -334,6 +335,9 @@ function StorageSection(): React.JSX.Element {
     void window.nais
       .invoke('settings:get', { key: 'webp_quality' })
       .then(({ value }) => setWebpQuality(value ? Number(value) : 80))
+    void window.nais
+      .invoke('settings:get', { key: 'webp_keep_metadata' })
+      .then(({ value }) => setWebpKeepMeta(value !== '0'))
   }, [])
 
   return (
@@ -391,7 +395,7 @@ function StorageSection(): React.JSX.Element {
         </Row>
         <Row
           label="WEBP 손실 압축"
-          hint="켜면 저장 파일을 손실 WEBP로 재압축 (이미지 포맷 설정과 무관하게 항상 WEBP로 저장) · 프롬프트 등 메타데이터는 유지"
+          hint="켜면 저장 파일을 손실 WEBP로 재압축 (이미지 포맷 설정과 무관하게 항상 WEBP로 저장)"
         >
           <Switch
             checked={webpLossy}
@@ -414,6 +418,23 @@ function StorageSection(): React.JSX.Element {
                 void window.nais.invoke('settings:set', {
                   key: 'webp_quality',
                   value: String(v)
+                })
+              }}
+            />
+          </Row>
+        )}
+        {webpLossy && (
+          <Row
+            label="메타데이터 보존"
+            hint="프롬프트·모델·시드 등 생성 정보를 재압축본에 그대로 옮김 · 끄면 제거 (외부 공유용)"
+          >
+            <Switch
+              checked={webpKeepMeta}
+              onCheckedChange={(v) => {
+                setWebpKeepMeta(v)
+                void window.nais.invoke('settings:set', {
+                  key: 'webp_keep_metadata',
+                  value: v ? '1' : '0'
                 })
               }}
             />
